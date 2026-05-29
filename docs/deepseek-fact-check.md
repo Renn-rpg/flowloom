@@ -25,8 +25,8 @@ $env:DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 | 9 | JSON 模式"假死"是否存在 | `response_format=json_object` 且 prompt **不含** "json" | ❓ | 是否无限空白到 max_tokens？ |
 | 10 | 连接超时阈值 + 保活帧形式 | 长任务观察 | ❓ | 规划称 ~10 分钟；保活帧需正确忽略 |
 | 11 | 账户并发额度（429 阈值） | 并发压测触发 429 | ❓ | 本地 Semaphore 上限须 ≤ 此值；**勿假设 500/2500** |
-| 12 | `usage` 是否含缓存计费字段 | 检查响应 `usage` | ❓ | 如 `prompt_cache_hit_tokens` / `miss` |
-| 13 | 自动前缀缓存是否默认开启、如何计费 | 重复相同前缀请求看命中 | ❓ | |
+| 12 | `usage` 是否含缓存计费字段 | 检查响应 `usage` | ✅ | 实测返回 `prompt_cache_hit_tokens`（[usage] cacheHit 实测 4736→9984），字段确实存在 |
+| 13 | 自动前缀缓存是否默认开启、如何计费 | 重复相同前缀请求看命中 | ✅ | 默认开启：相同前缀（system+tools）实测命中 cacheHit>0，第二次命中更多；命中部分按更低价计费 |
 | 14 | 是否有 `/anthropic` 兼容端点 | 查文档 / 试 base_url=.../anthropic | ❓ | 若有且完整，可走原生 Anthropic 路径 |
 | 15 | 是否有生产级 vision（图像/PDF 理解） | 查文档 | ❓ | 决定 Read 工具对图片/PDF 是否降级 |
 | 16 | 是否支持 `strict` 模式（schema 服务端校验，beta） | 试 base_url=.../beta + strict:true | ❓ | 若可用，优先开启降低修复频率 |
