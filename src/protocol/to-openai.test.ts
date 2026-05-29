@@ -23,7 +23,7 @@ describe('toOpenAIRequest', () => {
     })
   })
   it('never sets top_k and always sets max_tokens', () => {
-    const out = toOpenAIRequest(req) as Record<string, unknown>
+    const out = toOpenAIRequest(req) as unknown as Record<string, unknown>
     expect(out).not.toHaveProperty('top_k')
     expect(out.max_tokens).toBe(4096)
   })
