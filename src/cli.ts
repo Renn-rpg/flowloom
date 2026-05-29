@@ -35,7 +35,12 @@ program
     const rl = createInterface({ input: process.stdin, output: process.stdout })
     console.log('FlowLoom interactive mode — type /exit to quit.')
     for (;;) {
-      const line = (await rl.question('\nfloom> ')).trim()
+      let line: string
+      try {
+        line = (await rl.question('\nfloom> ')).trim()
+      } catch {
+        break // stdin 关闭 / EOF（管道结束或 Ctrl+D）→ 优雅退出，不崩溃
+      }
       if (line === '/exit') break
       if (line === '') continue
       await runTurn(session, line, write)
