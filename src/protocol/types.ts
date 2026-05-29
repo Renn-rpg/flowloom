@@ -33,3 +33,5 @@ export interface GenerateResult {
   stopReason: StopReason
   usage: { inputTokens: number; outputTokens: number }
 }
+
+export interface GenerateOptions { onText?: (delta: string) => void }

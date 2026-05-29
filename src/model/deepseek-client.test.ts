@@ -16,4 +16,23 @@ describe('DeepSeekClient', () => {
     expect(res.text).toBe('hello')
     expect(res.stopReason).toBe('end_turn')
   })
+
+  it('streams text via onText and returns accumulated result', async () => {
+    async function* gen() {
+      yield { choices: [{ delta: { content: 'hi' } }] }
+      yield { choices: [{ delta: {}, finish_reason: 'stop' }] }
+    }
+    const create = vi.fn().mockResolvedValue(gen())
+    const fakeOpenAI = { chat: { completions: { create } } } as any
+    const client = new DeepSeekClient({ model: 'deepseek-chat', openai: fakeOpenAI })
+    const seen: string[] = []
+    const res = await client.generate(
+      { system: 's', messages: [{ role: 'user', text: 'x' }], tools: [], model: 'deepseek-chat', maxTokens: 10 },
+      { onText: (d) => seen.push(d) },
+    )
+    expect(create.mock.calls[0][0].stream).toBe(true)
+    expect(seen.join('')).toBe('hi')
+    expect(res.text).toBe('hi')
+    expect(res.stopReason).toBe('end_turn')
+  })
 })

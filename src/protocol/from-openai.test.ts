@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fromOpenAIResponse } from './from-openai.js'
+import { fromOpenAIResponse, StreamAccumulator } from './from-openai.js'
 
 describe('fromOpenAIResponse', () => {
   it('maps tool_calls finish_reason to tool_use and parses arguments', () => {
@@ -23,5 +23,21 @@ describe('fromOpenAIResponse', () => {
     const resp = { choices: [{ finish_reason: 'tool_calls', message: { tool_calls: [{ id: 'c', type: 'function', function: { name: 'x', arguments: '{"a":1' } }] } }], usage: { prompt_tokens: 0, completion_tokens: 0 } }
     const r = fromOpenAIResponse(resp)
     expect(r.toolCalls[0].input).toEqual({ a: 1 })
+  })
+})
+
+describe('StreamAccumulator', () => {
+  it('accumulates text deltas and tool_calls across chunks', () => {
+    const acc = new StreamAccumulator()
+    const seen: string[] = []
+    seen.push(acc.addChunk({ choices: [{ delta: { content: 'Hel' } }] }))
+    seen.push(acc.addChunk({ choices: [{ delta: { content: 'lo' } }] }))
+    acc.addChunk({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'read_file', arguments: '{"pa' } }] } }] })
+    acc.addChunk({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'th":"/a"}' } }] }, finish_reason: 'tool_calls' }] })
+    const r = acc.result()
+    expect(seen.join('')).toBe('Hello')
+    expect(r.text).toBe('Hello')
+    expect(r.stopReason).toBe('tool_use')
+    expect(r.toolCalls).toEqual([{ id: 'c1', name: 'read_file', input: { path: '/a' } }])
   })
 })
