@@ -19,6 +19,10 @@ function makeSession(model: string) {
   return createSession({ client: new DeepSeekClient({ model }), registry, system: SYSTEM, model, maxTokens: 4096 })
 }
 
+function printUsage(session: ReturnType<typeof makeSession>) {
+  process.stderr.write(`[usage] in=${session.usage.inputTokens} out=${session.usage.outputTokens} cacheHit=${session.usage.cacheHitTokens}\n`)
+}
+
 const program = new Command()
 program
   .name('floom')
@@ -30,6 +34,7 @@ program
     if (task.length) {
       await runTurn(session, task.join(' '), write)
       process.stdout.write('\n')
+      printUsage(session)
       return
     }
     const rl = createInterface({ input: process.stdin, output: process.stdout })
@@ -45,6 +50,7 @@ program
       if (line === '') continue
       await runTurn(session, line, write)
       process.stdout.write('\n')
+      printUsage(session)
     }
     rl.close()
   })

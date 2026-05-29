@@ -31,7 +31,7 @@ export interface GenerateResult {
   text: string
   toolCalls: ToolCall[]
   stopReason: StopReason
-  usage: { inputTokens: number; outputTokens: number }
+  usage: { inputTokens: number; outputTokens: number; cacheHitTokens?: number }
 }
 
 export interface GenerateOptions { onText?: (delta: string) => void }

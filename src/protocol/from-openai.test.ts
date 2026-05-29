@@ -10,7 +10,7 @@ describe('fromOpenAIResponse', () => {
     const r = fromOpenAIResponse(resp)
     expect(r.stopReason).toBe('tool_use')
     expect(r.toolCalls).toEqual([{ id: 'call_1', name: 'read_file', input: { path: '/a.ts' } }])
-    expect(r.usage).toEqual({ inputTokens: 10, outputTokens: 5 })
+    expect(r.usage).toEqual({ inputTokens: 10, outputTokens: 5, cacheHitTokens: 0 })
   })
   it('maps stop to end_turn and extracts text', () => {
     const resp = { choices: [{ finish_reason: 'stop', message: { content: 'done' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }
@@ -23,6 +23,11 @@ describe('fromOpenAIResponse', () => {
     const resp = { choices: [{ finish_reason: 'tool_calls', message: { tool_calls: [{ id: 'c', type: 'function', function: { name: 'x', arguments: '{"a":1' } }] } }], usage: { prompt_tokens: 0, completion_tokens: 0 } }
     const r = fromOpenAIResponse(resp)
     expect(r.toolCalls[0].input).toEqual({ a: 1 })
+  })
+
+  it('reads cache hit tokens when present', () => {
+    const resp = { choices: [{ finish_reason: 'stop', message: { content: 'x' } }], usage: { prompt_tokens: 10, completion_tokens: 2, prompt_cache_hit_tokens: 8 } }
+    expect(fromOpenAIResponse(resp).usage.cacheHitTokens).toBe(8)
   })
 })
 

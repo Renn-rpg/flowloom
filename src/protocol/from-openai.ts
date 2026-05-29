@@ -22,7 +22,7 @@ export function fromOpenAIResponse(resp: any): GenerateResult {
     text: msg.content ?? '',
     toolCalls,
     stopReason: mapStop(choice.finish_reason ?? ''),
-    usage: { inputTokens: resp.usage?.prompt_tokens ?? 0, outputTokens: resp.usage?.completion_tokens ?? 0 },
+    usage: { inputTokens: resp.usage?.prompt_tokens ?? 0, outputTokens: resp.usage?.completion_tokens ?? 0, cacheHitTokens: resp.usage?.prompt_cache_hit_tokens ?? 0 },
   }
 }
 
@@ -30,11 +30,11 @@ export class StreamAccumulator {
   private textBuf = ''
   private calls = new Map<number, { id: string; name: string; args: string }>()
   private finish = ''
-  private usage = { inputTokens: 0, outputTokens: 0 }
+  private usage = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 }
 
   // 返回本 chunk 的文本增量（供实时输出）
   addChunk(chunk: any): string {
-    if (chunk?.usage) this.usage = { inputTokens: chunk.usage.prompt_tokens ?? 0, outputTokens: chunk.usage.completion_tokens ?? 0 }
+    if (chunk?.usage) this.usage = { inputTokens: chunk.usage.prompt_tokens ?? 0, outputTokens: chunk.usage.completion_tokens ?? 0, cacheHitTokens: chunk.usage.prompt_cache_hit_tokens ?? 0 }
     const choice = chunk?.choices?.[0]
     if (!choice) return ''
     if (choice.finish_reason) this.finish = choice.finish_reason

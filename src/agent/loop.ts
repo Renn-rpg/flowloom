@@ -10,12 +10,13 @@ export interface AgentSession {
   maxTokens: number
   maxIters: number
   messages: InternalMessage[]
+  usage: { inputTokens: number; outputTokens: number; cacheHitTokens: number }
 }
 
 export function createSession(o: {
   client: ModelClient; registry: ToolRegistry; system: string; model: string; maxTokens: number; maxIters?: number
 }): AgentSession {
-  return { client: o.client, registry: o.registry, system: o.system, model: o.model, maxTokens: o.maxTokens, maxIters: o.maxIters ?? 25, messages: [] }
+  return { client: o.client, registry: o.registry, system: o.system, model: o.model, maxTokens: o.maxTokens, maxIters: o.maxIters ?? 25, messages: [], usage: { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 } }
 }
 
 export async function runTurn(s: AgentSession, userText: string, onText?: (d: string) => void): Promise<string> {
@@ -25,6 +26,9 @@ export async function runTurn(s: AgentSession, userText: string, onText?: (d: st
       { system: s.system, messages: s.messages, tools: s.registry.specs(), model: s.model, maxTokens: s.maxTokens },
       { onText },
     )
+    s.usage.inputTokens += res.usage.inputTokens
+    s.usage.outputTokens += res.usage.outputTokens
+    s.usage.cacheHitTokens += res.usage.cacheHitTokens ?? 0
     if (res.stopReason !== 'tool_use' || res.toolCalls.length === 0) {
       s.messages.push({ role: 'assistant', text: res.text })
       return res.text
