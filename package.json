@@ -12,7 +12,8 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "probe": "tsx scripts/probe.ts"
   },
   "dependencies": {
     "commander": "^12.1.0",
