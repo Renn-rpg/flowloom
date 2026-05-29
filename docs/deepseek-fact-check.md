@@ -14,10 +14,10 @@ $env:DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 | # | 待核验项 | 怎么测 | 状态 | 实测值 / 备注 |
 |---|---------|--------|------|--------------|
-| 1 | 真实 model id 列表 | `curl .../models -H "Authorization: Bearer $KEY"` | ❓ | 例：填入实际返回的 id；**勿假设** v4-flash/pro 或 chat/reasoner |
-| 2 | 是否支持 function/tool calling | 发一个带 `tools` 的请求看是否回 `tool_calls` | ❓ | |
+| 1 | 真实 model id 列表 | `curl .../models -H "Authorization: Bearer $KEY"` | ✅ | `deepseek-chat` 实测可用（端到端跑通）；完整列表仍待 `/models` 核对 |
+| 2 | 是否支持 function/tool calling | 发一个带 `tools` 的请求看是否回 `tool_calls` | ✅ | 实测支持：单次调用 `read_file` 成功 |
 | 3 | 是否支持**并行**工具调用（一次多个 tool_calls） | 设计需两个工具的任务，看 `tool_calls.length` | ❓ | 影响 agent loop 是否需并行执行工具 |
-| 4 | `tool_calls[].function.arguments` 是否合法 JSON | 重复 10 次最小调用，统计坏 JSON 频次 | ❓ | 坏 JSON 率 = ?/10，作为阶段2修复管线基线 |
+| 4 | `tool_calls[].function.arguments` 是否合法 JSON | 重复 10 次最小调用，统计坏 JSON 频次 | 🟡 | 首发 1/1 合法（含 Windows 正斜杠路径）；坏 JSON 率仍需 10 发统计作为阶段2基线 |
 | 5 | 幻觉 schema 外参数频次 | 同上，检查返回参数是否都在 schema 内 | ❓ | |
 | 6 | context 窗口长度（按 model） | 查官方文档 / 超长输入实测 | ❓ | **勿假设 1M** |
 | 7 | max output tokens（按 model） | 查文档 / 实测 | ❓ | **勿假设 384K** |
