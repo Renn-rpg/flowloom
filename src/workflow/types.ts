@@ -23,12 +23,13 @@ export interface StructuredAgentOpts extends AgentOpts {
   schemaName?: string
 }
 
-// 预算追踪器（注入到脚本 ctx 中，脚本侧只读/spent/remaining/charge）
+// 预算追踪器（注入到脚本 ctx 中，脚本侧可调 charge/remaining/assertHasBudget）
 export interface BudgetTracker {
   readonly total: number
   spent: number
   remaining(): number
   charge(n: number): void
+  assertHasBudget(estimate?: number): void
 }
 
 // 单次 run 的持久化记录 → runs 表
