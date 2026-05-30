@@ -12,6 +12,7 @@ export interface OpenAIRequest {
   max_tokens: number
   messages: OpenAIMessage[]
   tools?: { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }[]
+  tool_choice?: 'auto' | 'required' | { type: 'function'; function: { name: string } }
 }
 
 function mapMessage(m: InternalMessage): OpenAIMessage {
