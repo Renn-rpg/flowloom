@@ -3,6 +3,10 @@ import type { WorkflowRunOptions, WorkflowRunResult, WorkflowCtx, CallRecord } f
 import { AgentExecutor } from './agent-executor.js'
 import { SqliteJournal } from './journal.js'
 import { hashCanonical } from './hash.js'
+import { Semaphore } from './concurrency.js'
+import { BudgetTracker } from './budget.js'
+
+const MAX_AGENTS = 1000
 
 function makeRunId(): string {
   const ts = new Date().toISOString().replace(/[:.]/g, '-')
@@ -18,19 +22,16 @@ export async function executeWorkflow(
 
   const journal = new SqliteJournal(opts.journalPath ?? ':memory:')
 
-  // Phase 1: 检查是否有已完成的前缀（完全命中快速路径）
+  // Phase 1: 完全命中快速路径
   const prior = journal.lookupPrefix(scriptHash, argsHash, 1)
   if (prior) {
-    // 存在 status='done' 的先前 run → 提取最后一个 agent 调用的结果作为返回值
     let lastOutput: unknown = undefined
     if (prior.calls.length > 0) {
       const lastCall = prior.calls[prior.calls.length - 1]
       try {
         const parsed = JSON.parse(lastCall.result)
         lastOutput = parsed?.output
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     }
     journal.close()
     return {
@@ -47,7 +48,7 @@ export async function executeWorkflow(
     }
   }
 
-  // Phase 2: 全新运行 — 动态加载脚本（加时间戳绕过 ESM 缓存）
+  // Phase 2: 全新运行 — 加载脚本
   const scriptUrl = pathToFileURL(opts.scriptPath).href + '?t=' + Date.now()
   const mod = await import(scriptUrl)
   const userMeta = mod.meta
@@ -78,7 +79,7 @@ export async function executeWorkflow(
     totalCacheHitTokens: 0,
   })
 
-  // Phase 3: 构建 AgentExecutor
+  // Phase 3: 构建执行环境 — 所有共享实例
   const executor = new AgentExecutor({
     client: opts.client,
     registry: opts.registry,
@@ -87,30 +88,23 @@ export async function executeWorkflow(
     defaultSystem: opts.system ?? 'You are a coding agent.',
   })
 
-  // 日志缓冲区（phase / log）
+  const semaphore = new Semaphore()
+  const budget = new BudgetTracker(opts.budgetLimit ?? 1_000_000)
   const logs: string[] = []
 
-  // 预算追踪器（3a advisory）
-  const budget = {
-    total: opts.budgetLimit ?? 1_000_000,
-    spent: 0,
-    remaining(): number {
-      return Math.max(0, this.total - this.spent)
-    },
-    charge(n: number): void {
-      this.spent += n
-    },
-  }
-
-  // Resume 状态机：前缀比对
+  // 状态机
   let seq = 0
   let cachedCalls = 0
   let liveCalls = 0
-  const priorCalls: CallRecord[] = [] // prior 为 null（已在上方提前返回），无前缀可复用
+  let agentCount = 0
+  const priorCalls: CallRecord[] = [] // prior 为 null
   let inPrefix = false
-
-  // 记录当前这次 run 的 agent 调用结果（最终落盘用）
   const recordedCalls: CallRecord[] = []
+
+  // 总用量累计
+  let totalIn = 0
+  let totalOut = 0
+  let totalCache = 0
 
   const wrappedAgent = async (
     prompt: string,
@@ -131,11 +125,7 @@ export async function executeWorkflow(
         cachedCalls++
         try {
           const parsed = JSON.parse(prev.result)
-          if (
-            typeof parsed === 'object' &&
-            parsed != null &&
-            'output' in parsed
-          ) {
+          if (typeof parsed === 'object' && parsed != null && 'output' in parsed) {
             return (parsed as any).output
           }
           return prev.result
@@ -143,34 +133,60 @@ export async function executeWorkflow(
           return prev.result
         }
       }
-      // 第一个不匹配或失败的调用 → 退出前缀模式，该调用及其后全部 live
       inPrefix = false
     }
 
-    liveCalls++
-    const currentSeq = seq++
+    // 硬控 1: agent 计数上限
+    if (++agentCount > MAX_AGENTS) {
+      throw new Error(`agent count limit (${MAX_AGENTS}) exceeded`)
+    }
+
+    // 硬控 2: 信号量获取（排队等待）
+    const release = await semaphore.acquire()
+
     try {
-      const text = await executor.execute(prompt, agentOpts)
+      // 硬控 3: 预算预检（保守估计至少消耗 10 tokens）
+      budget.assertHasBudget(10)
+
+      const currentSeq = seq++
+      liveCalls++
+
+      // 用 executor.agent() 拿 AgentResult（含 usage），而非 execute()
+      const r = await executor.agent(prompt, agentOpts)
+      const text = r.text
+
+      // 回写用量
+      totalIn += r.usage.inputTokens
+      totalOut += r.usage.outputTokens
+      totalCache += r.usage.cacheHitTokens ?? 0
+
+      // 记账：按实际 output tokens charge（+ input tokens 的保守估值）
+      budget.charge(r.usage.outputTokens + r.usage.inputTokens)
+
       const record: CallRecord = {
         runId,
         seq: currentSeq,
         callHash,
         status: 'done',
         result: JSON.stringify({ output: text }),
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheHitTokens: 0,
+        inputTokens: r.usage.inputTokens,
+        outputTokens: r.usage.outputTokens,
+        cacheHitTokens: r.usage.cacheHitTokens ?? 0,
         completedAt: new Date().toISOString(),
       }
       recordedCalls.push(record)
       return text
-    } catch {
+    } catch (e) {
+      if (e instanceof Error && e.name === 'BudgetExhaustedError') {
+        process.stderr.write(`[budget] ${e.message}\n`)
+      }
+      const currentSeq = seq - 1 // 回退到当前序号
       const record: CallRecord = {
         runId,
-        seq: currentSeq,
+        seq: currentSeq >= 0 ? currentSeq : liveCalls,
         callHash,
         status: 'failed',
-        result: JSON.stringify({ error: 'agent call failed' }),
+        result: JSON.stringify({ error: (e as Error).message }),
         inputTokens: 0,
         outputTokens: 0,
         cacheHitTokens: 0,
@@ -178,15 +194,19 @@ export async function executeWorkflow(
       }
       recordedCalls.push(record)
       return null
+    } finally {
+      release()
     }
   }
 
   const ctx: WorkflowCtx = {
     agent: wrappedAgent,
+
     parallel: async (thunks) => {
       const results = await Promise.all(thunks.map((t) => t().catch(() => null)))
       return results
     },
+
     pipeline: async (items, ...stages) => {
       const results = await Promise.all(
         items.map(async (item, index) => {
@@ -203,40 +223,68 @@ export async function executeWorkflow(
       )
       return results
     },
+
     phase: (title: string) => {
-      logs.push(`[phase] ${title}`)
-    },
-    log: (msg: string) => {
+      const msg = `\n[phase] ${title}`
+      process.stderr.write(msg + '\n')
       logs.push(msg)
     },
-    budget,
-    workflow: async () => {
-      throw new Error('nested workflow not yet implemented (3b)')
+
+    log: (msg: string) => {
+      process.stderr.write(`  ${msg}\n`)
+      logs.push(msg)
     },
+
+    budget,
+
+    workflow: async (nameOrRef: string, wfArgs?: Record<string, unknown>) => {
+      // 嵌套 workflow：子脚本共享信号量 + 预算，不暴露 workflow()
+      const subUrl = pathToFileURL(nameOrRef).href + '?t=' + Date.now()
+      const subMod = await import(subUrl)
+      const subRun = subMod.run as ((ctx: WorkflowCtx) => Promise<unknown>) | undefined
+      if (!subRun) throw new Error(`No run export in ${nameOrRef}`)
+
+      const subCtx: WorkflowCtx = {
+        agent: wrappedAgent,
+        parallel: ctx.parallel,
+        pipeline: ctx.pipeline,
+        phase: ctx.phase,
+        log: ctx.log,
+        budget,
+        workflow: async () => {
+          throw new Error('workflow() nesting limited to one level')
+        },
+        args: wfArgs ?? {},
+      }
+      return await subRun(subCtx)
+    },
+
     args: opts.args,
   }
 
-  // Phase 4: 在宿主上下文中执行 run(ctx)（vm 沙箱延至 3b）
+  // Phase 4: 执行
   try {
     const result = await userRun(ctx)
 
-    // 落盘所有 recordCall
     for (const rc of recordedCalls) {
       journal.recordCall(rc)
     }
     journal.closeRun(runId, 'done')
     journal.close()
 
+    process.stderr.write(
+      `[usage] budget=${budget.spent}/${budget.total} live=${liveCalls} cached=${cachedCalls}\n`,
+    )
+
     return {
       runId,
       status: 'done',
       cachedCalls,
       liveCalls,
-      usage: { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 },
+      usage: { inputTokens: totalIn, outputTokens: totalOut, cacheHitTokens: totalCache },
       result,
     }
   } catch (e) {
-    // 失败调用也要落盘（供 resume 时知道哪些 seq 应该重跑）
     for (const rc of recordedCalls) {
       journal.recordCall(rc)
     }
@@ -248,7 +296,7 @@ export async function executeWorkflow(
       status: 'failed',
       cachedCalls,
       liveCalls,
-      usage: { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 },
+      usage: { inputTokens: totalIn, outputTokens: totalOut, cacheHitTokens: totalCache },
       error: (e as Error).message,
     }
   }
