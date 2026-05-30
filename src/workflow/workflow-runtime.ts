@@ -93,7 +93,7 @@ export async function executeWorkflow(
   const executor = new AgentExecutor({
     client: opts.client,
     registry: opts.registry,
-    defaultModel: opts.model ?? 'deepseek-chat',
+    defaultModel: opts.model ?? 'deepseek-v4-pro',
     defaultMaxTokens: opts.maxTokens ?? 4096,
     defaultSystem: opts.system ?? 'You are a coding agent.',
   })

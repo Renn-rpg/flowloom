@@ -1,5 +1,17 @@
 import chalk from 'chalk'
 
+const W = 58
+const blue = chalk.hex('#4A90D9')
+const bluePipe = blue('│')
+const STRIP_ANSI = /\x1B\[[0-9;]*m/g
+const blankLine = bluePipe + ' '.repeat(W - 2) + bluePipe
+
+function border(text: string): string {
+  const visual = text.replace(STRIP_ANSI, '')
+  const pad = W - 2 - visual.length
+  return bluePipe + text + ' '.repeat(Math.max(0, pad)) + bluePipe
+}
+
 export function showWelcome(opts: {
   version: string
   model: string
@@ -7,93 +19,53 @@ export function showWelcome(opts: {
   cwd: string
   isInteractive: boolean
 }): void {
-  const W = 58
-  const blue = chalk.hex('#4A90D9')
   const title = ` FlowLoom v${opts.version} `
   const titleLen = title.length
   const leftDash = Math.floor((W - 2 - titleLen) / 2)
   const rightDash = W - 2 - titleLen - leftDash
   const user = process.env.USER || process.env.USERNAME || 'dev'
 
-  process.stderr.write('\n')
+  const out: string[] = []
 
-  // 上框线，中间嵌入标题
-  process.stderr.write(
+  out.push('')
+  out.push(
     blue('╭') +
       blue('─'.repeat(leftDash)) +
       chalk.blue.bold(title) +
       blue('─'.repeat(rightDash)) +
-      blue('╮') +
-      '\n',
+      blue('╮'),
   )
 
-  // 空行 → 鲸鱼行 → 空行
-  const whaleLines = [
-    '         ﹋ ﹋ ﹋ ﹋ ﹋ ﹋ ﹋ ﹋         ',
-    '       ﹋                       ﹋       ',
-    '      ﹋          🐋            ﹋      ',
-    '       ﹋                       ﹋       ',
-    '         ﹋ ﹋ ﹋ ﹋ ﹋ ﹋ ﹋ ﹋         ',
-  ]
+  out.push(blankLine)
 
-  process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
-
-  for (const line of whaleLines) {
-    const indent = Math.floor((W - 2 - line.length) / 2)
-    process.stderr.write(
-      blue('│') +
-        ' '.repeat(indent) +
-        chalk.cyanBright(line) +
-        ' '.repeat(Math.max(0, W - 2 - indent - line.length)) +
-        blue('│') +
-        '\n',
-    )
+  for (const [label, value] of [
+    ['Model:   ', opts.model],
+    ['Node:    ', `v${opts.nodeVersion}`],
+    ['User:    ', user],
+    ['CWD:     ', opts.cwd],
+  ] as const) {
+    out.push(border(chalk.dim(`  ${label}`) + chalk.green(value)))
   }
 
-  process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
-
-  // 信息行
-  const info = [
-    chalk.dim('  Model:   ') + chalk.green(opts.model),
-    chalk.dim('  Node:    ') + chalk.green(`v${opts.nodeVersion}`),
-    chalk.dim('  User:    ') + chalk.green(user),
-    chalk.dim('  CWD:     ') + chalk.green(opts.cwd),
-  ]
-
-  for (const line of info) {
-    const stripped = line.replace(/\x1B\[[0-9;]*m/g, '')
-    process.stderr.write(
-      blue('│') +
-        line +
-        ' '.repeat(Math.max(0, W - 2 - stripped.length)) +
-        blue('│') +
-        '\n',
-    )
-  }
-
-  process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
+  out.push(blankLine)
 
   if (opts.isInteractive) {
-    const tips =
-      chalk.dim('  ') +
-      chalk.cyan('/exit') +
-      chalk.dim(' quit  ·  ') +
-      chalk.cyan('Ctrl+C') +
-      chalk.dim(' cancel  ·  ') +
-      chalk.cyan('#') +
-      chalk.dim(' session')
-    const tipsStripped = tips.replace(/\x1B\[[0-9;]*m/g, '')
-    process.stderr.write(
-      blue('│') +
-        tips +
-        ' '.repeat(Math.max(0, W - 2 - tipsStripped.length)) +
-        blue('│') +
-        '\n',
+    out.push(
+      border(
+        chalk.dim('  ') +
+          chalk.cyan('/exit') +
+          chalk.dim(' quit  ·  ') +
+          chalk.cyan('Ctrl+C') +
+          chalk.dim(' cancel  ·  ') +
+          chalk.cyan('#') +
+          chalk.dim(' session'),
+      ),
     )
-    process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
+    out.push(blankLine)
   }
 
-  // 下框线
-  process.stderr.write(blue('╰') + blue('─'.repeat(W - 2)) + blue('╯') + '\n')
-  process.stderr.write('\n')
+  out.push(blue('╰') + blue('─'.repeat(W - 2)) + blue('╯'))
+  out.push('')
+
+  process.stderr.write(out.join('\n'))
 }

@@ -50,9 +50,12 @@ async function runTurnWithUI(
   const thinkSpinner = createSpinner('Thinking...')
   let toolSpinner: Ora | null = null
   let totalTools = 0
+  let responseText = ''
 
   await runTurn(session, task, {
-    onText: write,
+    onText: (delta) => {
+      responseText += delta
+    },
     onThinking: () => {
       thinkSpinner.text = 'Thinking...'
     },
@@ -75,6 +78,9 @@ async function runTurnWithUI(
     },
   })
 
+  // 等 spinner 完全停掉后再输出响应文本，避免 Windows 终端 \r 覆盖
+  if (responseText) write(responseText + '\n')
+
   const elapsed = Date.now() - startTime
   const outTokens = session.usage.outputTokens
   process.stderr.write(fmt.summary(outTokens, totalTools, elapsed) + '\n')
@@ -90,22 +96,23 @@ program
   .option(
     '-m, --model <id>',
     'model id',
-    process.env.DEEPSEEK_MODEL ?? 'deepseek-chat',
+    process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro',
   )
   .action(async (task: string[], opts: { model: string }) => {
     const session = makeSession(opts.model)
-    const write = (d: string) => process.stdout.write(d)
 
     if (task.length) {
-      await runTurnWithUI(session, task.join(' '), write)
+      await runTurnWithUI(session, task.join(' '), (d) => process.stdout.write(d))
       process.stdout.write('\n')
       return
     }
 
+    // REPL：响应文本走 stderr，避免和 readline 的 stdout 争用
     const rl = createInterface({
       input: process.stdin,
       output: process.stdout,
     })
+    const write = (d: string) => process.stderr.write(d)
     showWelcome({
       version: VERSION,
       model: opts.model,
@@ -137,7 +144,7 @@ program
   .option(
     '-m, --model <id>',
     'model id',
-    process.env.DEEPSEEK_MODEL ?? 'deepseek-chat',
+    process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro',
   )
   .option('--sandbox <type>', 'sandbox type: vm (default) or isolated (stub)', 'vm')
   .option('--workspace <dir>', 'custom workspace directory (default: temp dir)')

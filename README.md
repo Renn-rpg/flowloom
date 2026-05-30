@@ -232,7 +232,7 @@ floom> /exit
 floom run script.mjs [options]
 
 Options:
-  -m, --model <id>      Model ID (default: deepseek-chat)
+  -m, --model <id>      Model ID (default: deepseek-v4-pro)
   -b, --budget <n>       Token budget (default: 1000000)
   -j, --journal <path>   Journal database path (default: .floom/journal.db)
   -a, --args <json>      JSON args passed to script (default: {})

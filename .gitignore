@@ -1,4 +1,13 @@
 node_modules/
 dist/
 .env
+.floom/
 tmp_probe/
+_vmprobe/
+vmtest/
+*_probe_agent.*
+vm-probe*.mjs
+vm-escape-test.mjs
+vm-mitigation-test.mjs
+_verify_*.mjs
+dynamic-workflow-showcase.mjs
