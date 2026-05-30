@@ -1,16 +1,5 @@
 import chalk from 'chalk'
 
-// DeepSeek 风简化像素鲸鱼
-const WHALE = [
-  '   ▄████▄   ',
-  ' ▄████████▄ ',
-  '████████████',
-  '████▀  ▀████',
-  ' ███    ███ ',
-  '  ▀██▄▄██▀  ',
-  '   ▀▀▀▀▀▀   ',
-]
-
 export function showWelcome(opts: {
   version: string
   model: string
@@ -30,21 +19,37 @@ export function showWelcome(opts: {
 
   // 上框线，中间嵌入标题
   process.stderr.write(
-    blue('╭') + blue('─'.repeat(leftDash)) + chalk.blue.bold(title) + blue('─'.repeat(rightDash)) + blue('╮') + '\n',
+    blue('╭') +
+      blue('─'.repeat(leftDash)) +
+      chalk.blue.bold(title) +
+      blue('─'.repeat(rightDash)) +
+      blue('╮') +
+      '\n',
   )
 
-  // 空行
+  // 空行 → 鲸鱼行 → 空行
+  const whaleLines = [
+    '         ﹋ ﹋ ﹋ ﹋ ﹋ ﹋ ﹋ ﹋         ',
+    '       ﹋                       ﹋       ',
+    '      ﹋          🐋            ﹋      ',
+    '       ﹋                       ﹋       ',
+    '         ﹋ ﹋ ﹋ ﹋ ﹋ ﹋ ﹋ ﹋         ',
+  ]
+
   process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
 
-  // 鲸鱼（居中）
-  for (const line of WHALE) {
+  for (const line of whaleLines) {
     const indent = Math.floor((W - 2 - line.length) / 2)
     process.stderr.write(
-      blue('│') + ' '.repeat(indent) + chalk.cyan(line) + ' '.repeat(Math.max(0, W - 2 - indent - line.length)) + blue('│') + '\n',
+      blue('│') +
+        ' '.repeat(indent) +
+        chalk.cyanBright(line) +
+        ' '.repeat(Math.max(0, W - 2 - indent - line.length)) +
+        blue('│') +
+        '\n',
     )
   }
 
-  // 空行
   process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
 
   // 信息行
@@ -58,11 +63,14 @@ export function showWelcome(opts: {
   for (const line of info) {
     const stripped = line.replace(/\x1B\[[0-9;]*m/g, '')
     process.stderr.write(
-      blue('│') + line + ' '.repeat(Math.max(0, W - 2 - stripped.length)) + blue('│') + '\n',
+      blue('│') +
+        line +
+        ' '.repeat(Math.max(0, W - 2 - stripped.length)) +
+        blue('│') +
+        '\n',
     )
   }
 
-  // 空行
   process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
 
   if (opts.isInteractive) {
@@ -76,7 +84,11 @@ export function showWelcome(opts: {
       chalk.dim(' session')
     const tipsStripped = tips.replace(/\x1B\[[0-9;]*m/g, '')
     process.stderr.write(
-      blue('│') + tips + ' '.repeat(Math.max(0, W - 2 - tipsStripped.length)) + blue('│') + '\n',
+      blue('│') +
+        tips +
+        ' '.repeat(Math.max(0, W - 2 - tipsStripped.length)) +
+        blue('│') +
+        '\n',
     )
     process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
   }
