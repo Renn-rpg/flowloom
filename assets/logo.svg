@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="256" height="256" rx="48" fill="#0F172A"/>
+
+  <!-- Terminal window decorations -->
+  <circle cx="44" cy="44" r="8" fill="#EF4444"/>
+  <circle cx="68" cy="44" r="8" fill="#F59E0B"/>
+  <circle cx="92" cy="44" r="8" fill="#10B981"/>
+
+  <!-- Weaving pattern (loom threads) -->
+  <g stroke="url(#g1)" stroke-width="3" stroke-linecap="round" opacity="0.9">
+    <!-- Horizontal threads -->
+    <line x1="40" y1="80" x2="216" y2="80"/>
+    <line x1="40" y1="110" x2="216" y2="110"/>
+    <line x1="40" y1="140" x2="216" y2="140"/>
+    <line x1="40" y1="170" x2="216" y2="170"/>
+  </g>
+
+  <g stroke="url(#g2)" stroke-width="3" stroke-linecap="round" opacity="0.9">
+    <!-- Vertical weave (over-under pattern) -->
+    <line x1="80" y1="65" x2="80" y2="95"/>   <!-- over -->
+    <line x1="120" y1="95" x2="120" y2="125"/> <!-- under → gap, over -->
+    <line x1="120" y1="65" x2="120" y2="80"/>  <!-- over -->
+    <line x1="120" y1="140" x2="120" y2="185"/> <!-- over -->
+
+    <line x1="160" y1="65" x2="160" y2="95"/>  <!-- over -->
+    <line x1="160" y1="110" x2="160" y2="125"/><!-- under → gap, but show -->
+    <line x1="160" y1="140" x2="160" y2="155"/><!-- over -->
+  </g>
+
+  <!-- Flowing cursor line -->
+  <path d="M44 200 L80 200 Q120 200 140 200 Q160 200 200 195" stroke="#10B981" stroke-width="3" stroke-linecap="round"/>
+  <rect x="200" y="190" width="3" height="20" rx="1" fill="#10B981">
+    <animate attributeName="opacity" values="1;0;1" dur="1s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- FL text mark at bottom -->
+  <text x="128" y="235" text-anchor="middle" font-family="monospace" font-size="14" font-weight="bold" fill="#64748B">F L O W L O O M</text>
+</svg>
