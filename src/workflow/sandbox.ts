@@ -1,6 +1,8 @@
 import vm from 'node:vm'
 import type { Runtime, RuntimeContext } from './types.js'
 
+let runCounter = 0
+
 // 确定性 Date 包装：拦截 Date.now() / 无参构造 / 无 new 调用
 function wrapDate(): DateConstructor {
   const Orig = Date
@@ -60,6 +62,29 @@ export class NodeVmRuntime implements Runtime {
     })
     const timeoutMs = this.syncTimeoutMs
     return {
+      async run(
+        fn: (...args: any[]) => any,
+        ...args: any[]
+      ): Promise<unknown> {
+        // 注入真正的函数引用（不序列化）到 sandbox，关闭 context 的 eval/Function
+        const fnKey = `__injected_fn_${runCounter++}`
+        const argKeys = args.map((_, i) => `__injected_arg_${runCounter}_${i}`)
+        // 注入函数
+        ;(sandboxCtx as any)[fnKey] = fn
+        // 注入参数
+        argKeys.forEach((k, i) => { (sandboxCtx as any)[k] = args[i] })
+        try {
+          const code = `${fnKey}.apply(null, [${argKeys.join(',')}])`
+          const result = vm.runInContext(code, sandboxCtx, { timeout: timeoutMs })
+          if (result != null && typeof (result as any).then === 'function') {
+            return await result
+          }
+          return result
+        } finally {
+          delete (sandboxCtx as any)[fnKey]
+          argKeys.forEach((k) => delete (sandboxCtx as any)[k])
+        }
+      },
       async runScript(
         fn: (...args: unknown[]) => unknown,
         ...args: unknown[]

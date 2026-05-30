@@ -5,6 +5,8 @@ import { SqliteJournal } from './journal.js'
 import { hashCanonical } from './hash.js'
 import { Semaphore } from './concurrency.js'
 import { BudgetTracker } from './budget.js'
+import { NodeVmRuntime } from './sandbox.js'
+import { Workspace } from './workspace.js'
 
 const MAX_AGENTS = 1000
 
@@ -265,9 +267,23 @@ export async function executeWorkflow(
     args: opts.args,
   }
 
-  // Phase 4: 执行
+  // Phase 4: 创建 workspace，可选 vm 沙箱，执行脚本
+  let workspace: Workspace | null = null
   try {
-    const result = await userRun(ctx)
+    // 创建 workspace（临时目录隔离文件操作）
+    workspace = await Workspace.create()
+    // 把 workspace root 注回 ctx，供脚本内使用
+    ;(ctx as any).workspaceRoot = workspace.root
+
+    let result: unknown
+    if (opts.runtime) {
+      // 走 vm sandbox 执行（确定性：Date.now/Math.random 被拦截）
+      const rt = opts.runtime.createContext(ctx as Record<string, unknown>)
+      result = await rt.run(userRun, ctx)
+    } else {
+      // 直接宿主执行（默认路径）
+      result = await userRun(ctx)
+    }
 
     for (const rc of recordedCalls) {
       journal.recordCall(rc)
@@ -301,6 +317,10 @@ export async function executeWorkflow(
       liveCalls,
       usage: { inputTokens: totalIn, outputTokens: totalOut, cacheHitTokens: totalCache },
       error: (e as Error).message,
+    }
+  } finally {
+    if (workspace) {
+      await workspace.cleanup().catch(() => {})
     }
   }
 }

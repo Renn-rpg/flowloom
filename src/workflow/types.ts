@@ -107,6 +107,10 @@ export interface RuntimeContext {
     fn: (...args: unknown[]) => unknown,
     ...args: unknown[]
   ): Promise<unknown>
+  run(
+    fn: (...args: any[]) => any,
+    ...args: any[]
+  ): Promise<unknown>
 }
 
 // agent-executor 返回结果（文本 + 用量，供 journal 落盘用）
