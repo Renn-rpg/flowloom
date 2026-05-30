@@ -106,8 +106,8 @@ export async function executeWorkflow(
   let seq = 0
   let cachedCalls = 0
   let liveCalls = 0
-  const priorCalls = prior?.calls ?? []
-  let inPrefix = priorCalls.length > 0
+  const priorCalls: CallRecord[] = [] // prior 为 null（已在上方提前返回），无前缀可复用
+  let inPrefix = false
 
   // 记录当前这次 run 的 agent 调用结果（最终落盘用）
   const recordedCalls: CallRecord[] = []
