@@ -1,44 +1,15 @@
 import chalk from 'chalk'
 
+// DeepSeek 风简化像素鲸鱼
 const WHALE = [
-  '                    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄',
-  '                ▄▄██████████████████████▄▄',
-  '             ▄██████████████████████████████▄',
-  '           ▄██████████████████████████████████▄',
-  '         ▄██████████▀▀          ▀▀███████████▄',
-  '       ▄███████▀                    ▀████████▄',
-  '      ███████▀       ▐█     █▌        ▀███████',
-  '     ██████▀         ▐█     █▌          ▀██████',
-  '    █████▀            ▀▀▀▀▀▀▀▀             █████',
-  '   █████              ▄▄▄▄▄▄▄▄             ▐████',
-  '  ▐████              █▌       █▌             ████▌',
-  '  ████              ▐█  ▄▄▄▄▄  █▌             ████',
-  '  ████              █▌         ▐█             ████',
-  '  ▐████              ▀█████████▀              ████▌',
-  '   █████▄                                   ▄█████',
-  '    ▀█████▄                               ▄█████▀',
-  '     ▀██████▄                           ▄██████▀',
-  '      ▀███████▄                       ▄███████▀',
-  '        ▀████████▄                 ▄▄████████▀',
-  '          ▀█████████▄▄         ▄▄██████████▀',
-  '            ▀▀███████████████████████████▀▀',
-  '                ▀▀████████████████████▀▀',
-  '                     ▀▀▀▀▀▀▀▀▀▀▀▀▀',
+  '   ▄████▄   ',
+  ' ▄████████▄ ',
+  '████████████',
+  '████▀  ▀████',
+  ' ███    ███ ',
+  '  ▀██▄▄██▀  ',
+  '   ▀▀▀▀▀▀   ',
 ]
-
-function boxTop(width: number): string {
-  return chalk.blueBright('╭') + chalk.blueBright('─'.repeat(width - 2)) + chalk.blueBright('╮')
-}
-
-function boxBottom(width: number): string {
-  return chalk.blueBright('╰') + chalk.blueBright('─'.repeat(width - 2)) + chalk.blueBright('╯')
-}
-
-function boxLine(text: string, width: number): string {
-  const stripped = text.replace(/\x1B\[[0-9;]*m/g, '')
-  const pad = Math.max(0, width - 2 - stripped.length)
-  return chalk.blueBright('│') + text + ' '.repeat(pad) + chalk.blueBright('│')
-}
 
 export function showWelcome(opts: {
   version: string
@@ -47,59 +18,70 @@ export function showWelcome(opts: {
   cwd: string
   isInteractive: boolean
 }): void {
-  const W = 60
-  const now = new Date().toLocaleString()
+  const W = 58
+  const blue = chalk.hex('#4A90D9')
+  const title = ` FlowLoom v${opts.version} `
+  const titleLen = title.length
+  const leftDash = Math.floor((W - 2 - titleLen) / 2)
+  const rightDash = W - 2 - titleLen - leftDash
   const user = process.env.USER || process.env.USERNAME || 'dev'
 
   process.stderr.write('\n')
 
-  // 鲸鱼吉祥物
+  // 上框线，中间嵌入标题
+  process.stderr.write(
+    blue('╭') + blue('─'.repeat(leftDash)) + chalk.blue.bold(title) + blue('─'.repeat(rightDash)) + blue('╮') + '\n',
+  )
+
+  // 空行
+  process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
+
+  // 鲸鱼（居中）
   for (const line of WHALE) {
-    process.stderr.write(chalk.cyan(line) + '\n')
+    const indent = Math.floor((W - 2 - line.length) / 2)
+    process.stderr.write(
+      blue('│') + ' '.repeat(indent) + chalk.cyan(line) + ' '.repeat(Math.max(0, W - 2 - indent - line.length)) + blue('│') + '\n',
+    )
   }
 
-  process.stderr.write('\n' + boxTop(W) + '\n')
+  // 空行
+  process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
 
-  const lines: string[] = [
-    chalk.bold.cyan('  🐋  FlowLoom') + chalk.dim(`  v${opts.version}`),
-    '',
+  // 信息行
+  const info = [
     chalk.dim('  Model:   ') + chalk.green(opts.model),
     chalk.dim('  Node:    ') + chalk.green(`v${opts.nodeVersion}`),
     chalk.dim('  User:    ') + chalk.green(user),
     chalk.dim('  CWD:     ') + chalk.green(opts.cwd),
   ]
 
+  for (const line of info) {
+    const stripped = line.replace(/\x1B\[[0-9;]*m/g, '')
+    process.stderr.write(
+      blue('│') + line + ' '.repeat(Math.max(0, W - 2 - stripped.length)) + blue('│') + '\n',
+    )
+  }
+
+  // 空行
+  process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
+
   if (opts.isInteractive) {
-    lines.push('')
-    lines.push(
+    const tips =
       chalk.dim('  ') +
-        chalk.cyan('/exit') +
-        chalk.dim(' quit  ·  ') +
-        chalk.cyan('#') +
-        chalk.dim(' session  ·  ') +
-        chalk.cyan('Ctrl+C') +
-        chalk.dim(' cancel'),
+      chalk.cyan('/exit') +
+      chalk.dim(' quit  ·  ') +
+      chalk.cyan('Ctrl+C') +
+      chalk.dim(' cancel  ·  ') +
+      chalk.cyan('#') +
+      chalk.dim(' session')
+    const tipsStripped = tips.replace(/\x1B\[[0-9;]*m/g, '')
+    process.stderr.write(
+      blue('│') + tips + ' '.repeat(Math.max(0, W - 2 - tipsStripped.length)) + blue('│') + '\n',
     )
-    lines.push(
-      chalk.dim('  🐋 DeepSeek whale says: "Let\'s build something great!"'),
-    )
+    process.stderr.write(blue('│') + ' '.repeat(W - 2) + blue('│') + '\n')
   }
 
-  for (const line of lines) {
-    if (line === '') {
-      process.stderr.write(chalk.blueBright('│') + ' '.repeat(W - 2) + chalk.blueBright('│') + '\n')
-    } else {
-      process.stderr.write(boxLine(line, W) + '\n')
-    }
-  }
-
-  process.stderr.write(chalk.blueBright('│') + ' '.repeat(W - 2) + chalk.blueBright('│') + '\n')
-  process.stderr.write(
-    boxLine(
-      chalk.cyan.bold('  🐋 ') + chalk.dim(new Date().toLocaleString()),
-      W,
-    ) + '\n',
-  )
-  process.stderr.write(boxBottom(W) + '\n')
+  // 下框线
+  process.stderr.write(blue('╰') + blue('─'.repeat(W - 2)) + blue('╯') + '\n')
   process.stderr.write('\n')
 }
