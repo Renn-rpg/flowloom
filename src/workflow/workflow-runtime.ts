@@ -33,6 +33,9 @@ export async function executeWorkflow(
         lastOutput = parsed?.output
       } catch { /* ignore */ }
     }
+    process.stderr.write(
+      `[usage] all-cached live=0 cached=${prior.calls.length}\n`,
+    )
     journal.close()
     return {
       runId: prior.run.runId,

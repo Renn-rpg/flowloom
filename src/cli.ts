@@ -3,7 +3,8 @@ import { config } from 'dotenv'
 config()
 import { Command } from 'commander'
 import { createInterface } from 'node:readline/promises'
-import { resolve } from 'node:path'
+import { resolve, dirname } from 'node:path'
+import { mkdirSync } from 'node:fs'
 import { DeepSeekClient } from './model/deepseek-client.js'
 import { ToolRegistry } from './tools/registry.js'
 import { readTool } from './tools/read.js'
@@ -81,7 +82,7 @@ program
       args,
       client,
       registry,
-      journalPath: opts.journal,
+      journalPath: (() => { mkdirSync(dirname(resolve(opts.journal)), { recursive: true }); return opts.journal })(),
       budgetLimit: parseInt(opts.budget, 10),
       model: opts.model,
       system: SYSTEM,
