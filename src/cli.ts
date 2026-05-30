@@ -17,6 +17,9 @@ import { executeWorkflow } from './workflow/workflow-runtime.js'
 import { NodeVmRuntime } from './workflow/sandbox.js'
 import { createSpinner, toolStart } from './cli/spinner.js'
 import { fmt } from './cli/format.js'
+import { showWelcome } from './cli/welcome.js'
+
+const VERSION = '0.8.0'
 
 const SYSTEM =
   'You are FlowLoom, a coding agent. Use the provided tools (read_file, write_file, edit_file, run_shell) to inspect and modify the user\'s project. Prefer edit_file for small changes; call a tool whenever you need file contents or to run a command.'
@@ -103,9 +106,13 @@ program
       input: process.stdin,
       output: process.stdout,
     })
-    console.log(
-      fmt.cyan('FlowLoom') + fmt.dim(' interactive mode — type /exit to quit.'),
-    )
+    showWelcome({
+      version: VERSION,
+      model: opts.model,
+      nodeVersion: process.versions.node,
+      cwd: process.cwd(),
+      isInteractive: true,
+    })
     for (;;) {
       let line: string
       try {
