@@ -285,7 +285,7 @@ export async function executeWorkflow(
     let result: unknown
     if (opts.runtime) {
       // 走 vm sandbox 执行（确定性：Date.now/Math.random 被拦截）
-      const rt = opts.runtime.createContext(ctx as Record<string, unknown>)
+      const rt = opts.runtime.createContext(ctx as unknown as Record<string, unknown>)
       result = await rt.run(userRun, ctx)
     } else {
       // 直接宿主执行（默认路径）

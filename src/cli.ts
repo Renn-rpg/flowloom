@@ -13,6 +13,7 @@ import { editTool } from './tools/edit.js'
 import { bashTool } from './tools/bash.js'
 import { createSession, runTurn } from './agent/loop.js'
 import { executeWorkflow } from './workflow/workflow-runtime.js'
+import { NodeVmRuntime } from './workflow/sandbox.js'
 
 const SYSTEM = 'You are FlowLoom, a coding agent. Use the provided tools (read_file, write_file, edit_file, run_shell) to inspect and modify the user\'s project. Prefer edit_file for small changes; call a tool whenever you need file contents or to run a command.'
 
@@ -68,7 +69,13 @@ program
   .option('-j, --journal <path>', 'journal database path', '.floom/journal.db')
   .option('-a, --args <json>', 'JSON args to pass to the script', '{}')
   .option('-m, --model <id>', 'model id', process.env.DEEPSEEK_MODEL ?? 'deepseek-chat')
-  .action(async (script: string, opts: { budget: string; journal: string; args: string; model: string }) => {
+  .option('--sandbox <type>', 'sandbox type: vm (default) or isolated (stub)', 'vm')
+  .option('--workspace <dir>', 'custom workspace directory (default: temp dir)')
+  .option('--no-cleanup', 'keep workspace directory after execution')
+  .action(async (script: string, opts: {
+    budget: string; journal: string; args: string; model: string
+    sandbox: string; workspace?: string; cleanup: boolean
+  }) => {
     const registry = makeRegistry()
     const client = new DeepSeekClient({ model: opts.model })
     let args: Record<string, unknown> = {}
@@ -76,6 +83,13 @@ program
       args = JSON.parse(opts.args)
     } catch {
       process.stderr.write(`WARNING: invalid --args JSON, using {}\n`)
+    }
+    // 选择 Runtime：--sandbox vm → NodeVmRuntime，--sandbox isolated → stub
+    let runtime: NodeVmRuntime | undefined
+    if (opts.sandbox === 'vm') {
+      runtime = new NodeVmRuntime()
+    } else if (opts.sandbox === 'isolated') {
+      process.stderr.write('WARNING: isolated-vm sandbox not yet implemented, using default\n')
     }
     const result = await executeWorkflow({
       scriptPath: resolve(script),
@@ -86,6 +100,8 @@ program
       budgetLimit: parseInt(opts.budget, 10),
       model: opts.model,
       system: SYSTEM,
+      runtime,
+      forceReload: true,
     })
     if (result.status === 'done') {
       if (result.result !== undefined) {
