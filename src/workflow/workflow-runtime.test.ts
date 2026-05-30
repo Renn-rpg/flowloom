@@ -26,6 +26,7 @@ export async function run(ctx) { ${body} }
       client,
       registry: { specs: () => [], run: async () => 'ok', get: () => undefined, register: () => {} } as any,
       journalPath,
+      forceReload: true,
       model: 'm',
       maxTokens: 100,
       system: 'sys',

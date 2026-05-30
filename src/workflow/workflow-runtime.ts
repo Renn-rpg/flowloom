@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url'
+import { readFile } from 'node:fs/promises'
 import type { WorkflowRunOptions, WorkflowRunResult, WorkflowCtx, CallRecord } from './types.js'
 import { AgentExecutor } from './agent-executor.js'
 import { SqliteJournal } from './journal.js'
@@ -19,8 +20,10 @@ function makeRunId(): string {
 export async function executeWorkflow(
   opts: WorkflowRunOptions,
 ): Promise<WorkflowRunResult> {
-  const scriptHash = hashCanonical({ path: opts.scriptPath })
   const argsHash = hashCanonical(opts.args)
+  // 读取脚本文件内容 → 内容哈希（改名不影响 resume）
+  const scriptContent = await readFile(opts.scriptPath, 'utf8')
+  const scriptHash = hashCanonical(scriptContent)
 
   const journal = new SqliteJournal(opts.journalPath ?? ':memory:')
 
@@ -53,9 +56,11 @@ export async function executeWorkflow(
     }
   }
 
-  // Phase 2: 全新运行 — 加载脚本
-  const scriptUrl = pathToFileURL(opts.scriptPath).href + '?t=' + Date.now()
-  const mod = await import(scriptUrl)
+  // Phase 2: 全新运行 — 加载脚本（forceReload 时绕过 ESM 缓存）
+  const importUrl =
+    pathToFileURL(opts.scriptPath).href +
+    (opts.forceReload ? '?r=' + Date.now() : '')
+  const mod = await import(importUrl)
   const userMeta = mod.meta
   const userRun = mod.run as ((ctx: WorkflowCtx) => Promise<unknown>) | undefined
 
@@ -244,7 +249,9 @@ export async function executeWorkflow(
 
     workflow: async (nameOrRef: string, wfArgs?: Record<string, unknown>) => {
       // 嵌套 workflow：子脚本共享信号量 + 预算，不暴露 workflow()
-      const subUrl = pathToFileURL(nameOrRef).href + '?t=' + Date.now()
+      const subUrl =
+        pathToFileURL(nameOrRef).href +
+        (opts.forceReload ? '?r=' + Date.now() : '')
       const subMod = await import(subUrl)
       const subRun = subMod.run as ((ctx: WorkflowCtx) => Promise<unknown>) | undefined
       if (!subRun) throw new Error(`No run export in ${nameOrRef}`)

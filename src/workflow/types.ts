@@ -131,6 +131,8 @@ export interface WorkflowRunOptions {
   model?: string
   maxTokens?: number
   system?: string
+  forceReload?: boolean
+  workspacePath?: string
 }
 
 // executeWorkflow 返回值
