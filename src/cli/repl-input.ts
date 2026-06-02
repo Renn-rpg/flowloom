@@ -189,9 +189,10 @@ export function reduceKey(state: EditorState, key: Key, items: CompletionItem[])
     case 'enter': {
       if (menuOpen) {
         const accepted = items[Math.min(state.menuIndex, items.length - 1)].replacement
-        // 已经等于补全结果 → 没什么可补，直接执行；否则先补全（不提交）
         if (accepted !== state.buffer) return redraw(edited(accepted, accepted.length))
       }
+      // 空文本不提交
+      if (state.buffer.trim() === '') return none()
       return { state, action: 'submit' }
     }
     case 'esc':

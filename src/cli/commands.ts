@@ -58,8 +58,12 @@ export interface ArgOption {
   desc: string
 }
 export const SLASH_ARG_OPTIONS: Record<string, ArgOption[]> = {
+  model: [
+    { value: 'deepseek-v4-pro', desc: 'DeepSeek v4 Pro — thinking + tools' },
+    { value: 'deepseek-v4-flash', desc: 'DeepSeek v4 Flash — fast, cost-effective' },
+  ],
   effort: [
-    { value: 'max', desc: 'thinking model — deepest reasoning (FLOOM_REASONER_MODEL)' },
+    { value: 'max', desc: 'thinking model — deepest reasoning' },
     { value: 'high', desc: 'thinking model — high reasoning' },
     { value: 'normal', desc: 'base model — no extra reasoning' },
   ],

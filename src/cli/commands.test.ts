@@ -144,7 +144,7 @@ describe('commandArgOptions', () => {
     expect(commandArgOptions('EFFORT')).toBe(SLASH_ARG_OPTIONS.effort)
   })
   it('returns undefined for commands without enumerable args', () => {
-    expect(commandArgOptions('model')).toBeUndefined()
+    expect(commandArgOptions('plan')).toBeUndefined()
     expect(commandArgOptions('clear')).toBeUndefined()
     expect(commandArgOptions('bogus')).toBeUndefined()
   })

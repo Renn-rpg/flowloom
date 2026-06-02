@@ -59,8 +59,8 @@ describe('computeCompletions', () => {
   })
 
   it('no menu for a command that takes no enumerable args', () => {
-    expect(computeCompletions('/model ').items).toHaveLength(0)
-    expect(computeCompletions('/model deepseek-chat').items).toHaveLength(0)
+    expect(computeCompletions('/plan ').items).toHaveLength(0)
+    expect(computeCompletions('/plan extra').items).toHaveLength(0)
   })
 
   it('no menu for an unknown command with a space', () => {

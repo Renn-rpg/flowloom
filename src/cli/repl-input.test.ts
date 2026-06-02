@@ -211,8 +211,8 @@ describe('ReplReader (IO shell)', () => {
     mode = 'normal' // 函数每次 question() 求值 → 切换后用新文案
     const p2 = reader.question()
     await tick()
-    input.write('\r')
-    await p2
+    for (const c of ['o', 'k', '\r']) { input.write(c); await tick() }
+    expect(await p2).toBe('ok')
     expect(out.text).toContain('floom> ')
   })
 })
