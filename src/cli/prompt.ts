@@ -90,10 +90,8 @@ export function selectMenu(title: string[], options: MenuOption[]): Promise<numb
         draw(false)
       } else if (r.action === 'confirm') {
         draw(false)
-        out.write('\n')
         finish(selected)
       } else if (r.action === 'cancel') {
-        out.write('\n')
         finish(-1)
       }
     }

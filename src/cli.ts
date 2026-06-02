@@ -242,8 +242,10 @@ async function runTurnWithUI(
   ui: UiState,
 ) {
   const startTime = Date.now()
-  // 模型输出期间隐藏光标，仅 REPL 输入时可见
+  // 模型输出期间：隐藏光标，暂停 stdin 防止 Enter 干扰
   process.stderr.write('\x1b[?25l')
+  const wasPaused = process.stdin.isPaused()
+  process.stdin.pause() // 暂停 data 事件，不接收任何输入
   let totalTools = 0
   // 本轮全部思考链（跨多轮 generate 累计）；turn 结束写入 ui.lastReasoning 供 ctrl+o 展开。
   let reasoningBuf = ''
@@ -271,6 +273,7 @@ async function runTurnWithUI(
     if (thinkSpinner) {
       thinkSpinner.stop()
       thinkSpinner = null
+      process.stderr.write('\x1b[?25l') // ora.stop() 会恢复光标，重新隐藏
     }
   }
   const reportThinking = () => {
@@ -393,9 +396,10 @@ async function runTurnWithUI(
       },
     })
   } finally {
-    stopThinking() // 异常路径也要清掉定时器，避免事件循环挂住
-    stopBlinking() // 清理闪烁定时器
-    ui.lastReasoning = reasoningBuf // 缓存本轮思考链
+    stopThinking()
+    stopBlinking()
+    ui.lastReasoning = reasoningBuf
+    if (!wasPaused) process.stdin.resume() // 恢复 REPL 输入
   }
 
   if (streaming) write('\n') // 末轮流式文本收尾换行
