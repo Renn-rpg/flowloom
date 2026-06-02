@@ -134,7 +134,9 @@ const CONTEXT_TOKENS = Number(process.env.FLOOM_CONTEXT_TOKENS) || 0
 // --effort high/max 切换到的「thinking+工具」模型 id。**不预设默认值**（deepseek-reasoner
 // 不支持工具、文档示例的 deepseek-v4-pro 未在本账户实测，见 fact-check R2/R9）；
 // 由用户用真实 key 确认后自行填写。
-const REASONER_MODEL = process.env.FLOOM_REASONER_MODEL ?? ''
+// --effort high/max 需要的 thinking+工具模型。默认复用基础模型（deepseek-v4-pro 已支持）。
+// 如果基础模型不支持 thinking，用 FLOOM_REASONER_MODEL 单独指定。
+const REASONER_MODEL = process.env.FLOOM_REASONER_MODEL || (process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro')
 
 // 单次响应的 max_tokens 上限（客户端请求参数，非模型固有窗口）。thinking 模型的 CoT 与
 // 最终答案共用此额度，4096 太小会截断答案，故默认调高到 8192；可用 FLOOM_MAX_TOKENS 覆盖。
@@ -427,7 +429,7 @@ program
   )
   .option(
     '-e, --effort <level>',
-    'reasoning effort: high/max switches to the thinking model in FLOOM_REASONER_MODEL',
+    'reasoning effort: high/max enables thinking mode (defaults to base model)',
   )
   .option(
     '--yolo',

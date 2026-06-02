@@ -21,7 +21,7 @@ export function resolveEffortModel(
         model: baseModel,
         reasoning: false,
         warning:
-          '--effort high 需要 thinking+工具模型；请把其 id 设进环境变量 FLOOM_REASONER_MODEL（用真实 key 确认账户已开放，如 deepseek-v4-pro）。当前未设置，已回退到基础模型。',
+          '--effort high/max needs a thinking+tools model. Set FLOOM_REASONER_MODEL to your model id if different from base.',
       }
     }
     return { model: reasonerModel, reasoning: true }
