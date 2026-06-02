@@ -10,6 +10,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { validateSettings, type ValidatedSettings } from './schema.js'
 
 export interface FloomSettings {
   model?: string
@@ -59,7 +60,7 @@ function loadJson(path: string): Record<string, unknown> | null {
   return null
 }
 
-export function loadSettings(projectDir: string): FloomSettings {
+export function loadSettings(projectDir: string, envOverrides?: Record<string, string>): ValidatedSettings {
   const global = loadJson(join(homedir(), '.floom', 'settings.json'))
   const project = loadJson(join(projectDir, '.floom', 'settings.json'))
   const local = loadJson(join(projectDir, '.floom', 'settings.local.json'))
@@ -69,7 +70,15 @@ export function loadSettings(projectDir: string): FloomSettings {
   if (project) merged = mergeDeep(merged, project)
   if (local) merged = mergeDeep(merged, local)
 
-  return merged as unknown as FloomSettings
+  // 环境变量覆盖（最高优先级）
+  const overrides = envOverrides ?? process.env as Record<string, string>
+  if (overrides.FLOOM_MODEL) merged.model = overrides.FLOOM_MODEL
+  if (overrides.FLOOM_MAX_TOKENS) merged.maxTokens = Number(overrides.FLOOM_MAX_TOKENS)
+  if (overrides.FLOOM_CONTEXT_TOKENS) merged.contextTokens = Math.max(0, Number(overrides.FLOOM_CONTEXT_TOKENS) || 0)
+  if (overrides.FLOOM_EFFORT) merged.effort = overrides.FLOOM_EFFORT
+
+  // Zod 校验 + 填充默认值
+  return validateSettings(merged)
 }
 
 // 生成 settings 文件的 JSON 描述（供 /config 展示）

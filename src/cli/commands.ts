@@ -26,6 +26,7 @@ export interface SlashResult {
   exit?: boolean // /exit /quit
   mutated?: boolean // 改了持久化状态（model/effort/clear），cli 据此落盘
   skill?: string // 技能名（如 'code-review'），cli 据此 dispatch 子 agent
+  skillArgs?: string // 传给技能的参数（如 '/code-review --effort high' → '--effort high'）
   compact?: boolean // 请求语义压缩历史（需模型调用，由 cli 在 runSlash 返回后异步执行）
 }
 
@@ -50,6 +51,7 @@ export const SLASH_COMMANDS: Record<string, SlashSpec> = {
   simplify: { usage: '/simplify', desc: 'review changes for reuse and simplification' },
   architect: { usage: '/architect', desc: 'analyze architecture and propose designs' },
   config: { usage: '/config', desc: 'show effective settings' },
+  'deep-review': { usage: '/deep-review', desc: 'adversarial multi-agent code review (correctness + security)' },
   exit: { usage: '/exit', desc: 'quit floom' },
 }
 
@@ -152,7 +154,8 @@ export function runSlash(line: string, ctx: SlashContext): SlashResult {
     case 'code-review':
     case 'simplify':
     case 'architect':
-      return { handled: true, skill: name }
+    case 'deep-review':
+      return { handled: true, skill: name, skillArgs: arg || undefined }
     default:
       return { handled: true, output: `unknown command: /${name} — try /help` }
   }

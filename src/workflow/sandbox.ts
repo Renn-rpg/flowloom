@@ -61,7 +61,11 @@ function sealHostFn(fn: (...args: any[]) => any): (...args: any[]) => any {
       if (prop === 'constructor') {
         throw new Error('Function constructor is not available in the sandbox')
       }
-      return undefined // 不暴露宿主侧的任意属性，阻断进一步探测
+      // 放行 Function.prototype 的必要方法（.apply/.call/.bind 等），否则沙箱无法调用该函数。
+      // 只阻断 constructor，其余属性通过 Reflect.get 正常返回。
+      const val = Reflect.get(target, prop)
+      if (typeof val === 'function') return val.bind(target)
+      return val
     },
   }) as (...args: any[]) => any
   return proxy

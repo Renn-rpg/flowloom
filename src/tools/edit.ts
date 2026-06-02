@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename } from 'node:fs/promises'
+import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import type { Tool } from './types.js'
 import { type PathPolicy, allowAllPaths } from './permissions.js'
@@ -21,7 +21,13 @@ export function makeEditTool(paths: PathPolicy = allowAllPaths): Tool {
       // 原子写入：先写临时文件再 rename，避免 TOCTOU 竞态与中途崩溃文件损坏
       const tmpPath = join(dirname(path), `.floom-edit-${Math.random().toString(36).slice(2)}.tmp`)
       await writeFile(tmpPath, updated, 'utf8')
-      await rename(tmpPath, path)
+      try {
+        await rename(tmpPath, path)
+      } catch {
+        // rename 失败（如跨设备/权限）→ 清理临时文件
+        try { await unlink(tmpPath) } catch { /* best-effort */ }
+        throw new Error(`Failed to replace ${path}: rename failed`)
+      }
       return `edited ${path}`
     },
   }

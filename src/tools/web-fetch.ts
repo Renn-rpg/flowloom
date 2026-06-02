@@ -4,7 +4,34 @@ const TIMEOUT_MS = Number(process.env.FLOOM_FETCH_TIMEOUT_MS) || 15_000
 const MAX_OUT = 50_000 // 返回给模型的最大字符数
 const MAX_BYTES = 5_000_000 // content-length 上限
 const MAX_REDIRECTS = 3
-const UA = 'FlowLoom/0.8 (+coding-agent)'
+const UA = 'FlowLoom/0.10 (+coding-agent)'
+
+// 简单 LRU 内存缓存：避免同一 URL 短时间内重复抓取
+const CACHE_TTL_MS = 5 * 60 * 1000 // 5 分钟
+const CACHE_MAX = 100
+const fetchCache = new Map<string, { text: string; ts: number }>()
+
+function cacheGet(url: string): string | null {
+  const entry = fetchCache.get(url)
+  if (!entry) return null
+  if (Date.now() - entry.ts > CACHE_TTL_MS) {
+    fetchCache.delete(url)
+    return null
+  }
+  // LRU: 移到末尾
+  fetchCache.delete(url)
+  fetchCache.set(url, entry)
+  return entry.text
+}
+
+function cacheSet(url: string, text: string): void {
+  if (fetchCache.size >= CACHE_MAX) {
+    // 删除最旧条目
+    const oldest = fetchCache.keys().next().value
+    if (oldest) fetchCache.delete(oldest)
+  }
+  fetchCache.set(url, { text, ts: Date.now() })
+}
 
 // 判断主机是否为私有/环回/链路本地（SSRF 防护）。仅对 IP 字面量套用 IP 规则，
 // 普通域名（如 fc.com）不会被误判。涵盖云元数据地址 169.254.169.254。
@@ -128,6 +155,10 @@ export function makeWebFetchTool(
       const first = parseUrl(raw, allowPrivate)
       if ('error' in first) return `ERROR: ${first.error}: ${raw}`
 
+      // 检查缓存
+      const cached = cacheGet(first.url.href)
+      if (cached) return cached
+
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
       try {
@@ -165,7 +196,9 @@ export function makeWebFetchTool(
         else return `(non-text content: ${ct}, ${body.length} bytes) from ${raw}`
 
         if (text.length > MAX_OUT) text = text.slice(0, MAX_OUT) + `\n… (truncated; ${text.length} chars total)`
-        return text || '(empty response)'
+        const result = text || '(empty response)'
+        cacheSet(first.url.href, result)
+        return result
       } catch (e: any) {
         if (e?.name === 'AbortError') return `ERROR: fetch timed out after ${TIMEOUT_MS}ms: ${raw}`
         return `ERROR: fetch failed: ${e?.message ?? String(e)}`

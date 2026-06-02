@@ -273,7 +273,12 @@ export async function executeWorkflow(
     budget,
 
     workflow: async (nameOrRef: string, wfArgs?: Record<string, unknown>) => {
-      // 嵌套 workflow：子脚本共享信号量 + 预算，不暴露 workflow()
+      // 嵌套 workflow：共享信号量 + 预算，深度上限防止无限递归。
+      const MAX_WF_DEPTH = 5
+      const depth: number = (ctx as any)._depth ?? 0
+      if (depth >= MAX_WF_DEPTH) {
+        throw new Error(`workflow() nesting depth limit (${MAX_WF_DEPTH}) reached`)
+      }
       const subUrl =
         pathToFileURL(nameOrRef).href +
         (opts.forceReload ? '?r=' + Date.now() : '')
@@ -288,11 +293,10 @@ export async function executeWorkflow(
         phase: ctx.phase,
         log: ctx.log,
         budget,
-        workflow: async () => {
-          throw new Error('workflow() nesting limited to one level')
-        },
+        workflow: ctx.workflow, // 递归共享同一个 workflow()，深度由 _depth 控制
         args: wfArgs ?? {},
       }
+      ;(subCtx as any)._depth = depth + 1
       return await subRun(subCtx)
     },
 

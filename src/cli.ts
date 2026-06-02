@@ -11,17 +11,6 @@ import { Command } from 'commander'
 import { resolve, dirname } from 'node:path'
 import { mkdirSync, readFileSync } from 'node:fs'
 import type { Ora } from 'ora'
-import { DeepSeekClient } from './model/deepseek-client.js'
-import { ToolRegistry } from './tools/registry.js'
-import { makeReadTool } from './tools/read.js'
-import { makeWriteTool } from './tools/write.js'
-import { makeEditTool } from './tools/edit.js'
-import { makeMultiEditTool } from './tools/multi-edit.js'
-import { makeBashTool } from './tools/bash.js'
-import { BackgroundShells, makeBashOutputTool, makeKillShellTool } from './tools/shell-manager.js'
-import { makeGlobTool } from './tools/glob.js'
-import { makeGrepTool } from './tools/grep.js'
-import { makeWebFetchTool } from './tools/web-fetch.js'
 import {
   type PathPolicy,
   type ShellPolicy,
@@ -35,10 +24,12 @@ import { selectMenu } from './cli/prompt.js'
 import { ReplReader } from './cli/repl-input.js'
 import { resolveEffortModel } from './cli/effort.js'
 import { runSlash, type SlashContext } from './cli/commands.js'
+import { BackgroundShells } from './tools/shell-manager.js'
+import { ToolRegistry } from './tools/registry.js'
 import { loadHooks, evaluatePreToolUse, evaluatePostToolUse, expandHookCommand } from './hooks/engine.js'
 import { loadMcpConfig } from './mcp/config.js'
 import { connectMcpServers } from './mcp/manager.js'
-import { createSession, runTurn, type ToolGate } from './agent/loop.js'
+import { runTurn, type ToolGate } from './agent/loop.js'
 import { compactMessages } from './agent/compaction.js'
 import { makeDispatchAgentTool } from './agent/subagent.js'
 import { makeExitPlanModeTool, planModeGate } from './agent/plan.js'
@@ -58,163 +49,53 @@ import { skillRegistry } from './skills/registry.js'
 import { codeReviewSkill } from './skills/builtin/code-review.js'
 import { simplifySkill } from './skills/builtin/simplify.js'
 import { architectSkill } from './skills/builtin/architect.js'
+import { deepReviewSkill } from './skills/builtin/deep-review.js'
+import { loadAllSkills } from './skills/fs-loader.js'
 import { loadSettings, describeSettings } from './config/settings.js'
-import { makeGitDiffTool, makeGitLogTool, makeGitBranchTool, makeGitCommitTool } from './tools/git.js'
+import { makeGitDiffTool, makeGitLogTool, makeGitBranchTool, makeGitCommitTool, makeGitStatusTool, makeGitStashTool, makeGitWorktreeTool, makeGitFetchTool, makeGitPushTool, makeGitPullTool, makeGitMergeTool, makeGitRebaseTool, makeGitResetTool, makeGitRevertTool, makeGitBlameTool, makeGitTagTool } from './tools/git.js'
 import { CronStore } from './cron/store.js'
 import { CronScheduler } from './cron/scheduler.js'
 import { makeCronCreateTool, makeCronListTool, makeCronDeleteTool } from './cron/tool.js'
-import { makeWebSearchTool } from './tools/web-search.js'
-import { ModelRouter } from './model/router.js'
-import type { ModelClient } from './model/client.js'
 import { formatApiError } from './model/retry.js'
+import { getFactory } from './model/factory.js'
+import { TaskStore } from './task/store.js'
+import { makeTaskCreateTool, makeTaskUpdateTool, makeTaskListTool } from './task/tool.js'
+import {
+  makeSystem,
+  makeSubAgentSystem,
+  makeSession,
+  makeRegistry,
+  makeInteractiveShell,
+  sessionStore,
+  makeSessionId,
+  sessionsText,
+  type ToolPolicy,
+  CONTEXT_TOKENS,
+  REASONER_MODEL,
+  MAX_TOKENS,
+} from './cli/session-factory.js'
 
 // 注册内置技能
 skillRegistry.register(codeReviewSkill)
 skillRegistry.register(simplifySkill)
 skillRegistry.register(architectSkill)
+skillRegistry.register(deepReviewSkill)
 
-const VERSION = '0.9.0'
-
-// system prompt 按当前 model id 动态生成，好让模型在被问到时如实说出自己是哪个底层模型。
-// FlowLoom 只是外壳/CLI，底层是 DeepSeek 的某个模型——不强加虚假身份、不阻止它回答“你是什么模型”。
-function makeSystem(model: string, planMode = false): string {
-  return (
-    `You are running inside FlowLoom, an open-source agentic coding CLI. FlowLoom is the tool/harness, not the AI itself: your underlying language model is DeepSeek (model id: "${model}"), served over its OpenAI-compatible API. ` +
-    `If the user asks which model or AI you are, answer honestly and directly — you are the DeepSeek "${model}" model running inside the FlowLoom CLI. Do not claim to be a different model, and do not refuse or deflect the question. ` +
-    `Use the provided tools (read_file, write_file, edit_file, multi_edit, run_shell, glob, grep, web_fetch, dispatch_agent) to inspect and modify the user's project. Use glob to find files by name pattern and grep to search file contents before reading; prefer edit_file for a single small change and multi_edit for several changes to one file; use web_fetch to read documentation or pages by URL; call a tool whenever you need file contents or to run a command. ` +
-    `For long-running commands (dev servers, watchers, builds) call run_shell with background:true — it returns a task id immediately; read its output with bash_output and stop it with kill_shell instead of blocking. ` +
-    `Use dispatch_agent to delegate a large, self-contained subtask (e.g. broad codebase exploration or a focused multi-step investigation) to an isolated sub-agent — it keeps that work out of this conversation and returns a summary; pass it a complete standalone task description.` +
-    (planMode
-      ? `\n\nPLAN MODE IS ACTIVE. Do NOT make any changes yet — writing/editing files, running shell commands, dispatching sub-agents, and MCP tools are all BLOCKED. Use ONLY the read-only tools (read_file, glob, grep, web_fetch) to investigate. When you have a concrete, complete plan, call exit_plan_mode with the full plan text and wait for the user to approve it. Only after approval will the editing tools be unblocked.`
-      : '')
+// 从文件系统加载用户技能（~/.floom/skills/ + .floom/skills/）
+const fsSkills = loadAllSkills(process.cwd(), homedir())
+for (const s of fsSkills) {
+  skillRegistry.register(s)
+}
+if (fsSkills.length > 0) {
+  process.stderr.write(
+    fmt.dim(`  📄 loaded ${fsSkills.length} file-based skill(s): ${fsSkills.map(s => s.name).join(', ')}\n`),
   )
 }
 
-// 子 agent 的 system prompt：强调它看不到主对话、最终消息必须自包含、不能再派发子 agent。
-function makeSubAgentSystem(model: string): string {
-  return (
-    `You are a sub-agent dispatched by FlowLoom (running on the DeepSeek "${model}" model) to autonomously complete one focused, self-contained task. ` +
-    `You have file, search, and shell tools (read_file, write_file, edit_file, multi_edit, run_shell, glob, grep, web_fetch). You CANNOT dispatch further sub-agents. ` +
-    `Whoever dispatched you sees ONLY your final message — not your intermediate steps, tool calls, or tool output. Your final message must be CONCISE and COMPLETE: include concrete results (file paths, key findings, exactly what you changed). ` +
-    `Keep your final response under 40,000 characters — overly long output will be truncated without notice. ` +
-    `Work autonomously with the tools, then summarize. Do NOT ask the dispatcher questions — you cannot interact with them.`
-  )
-}
+const VERSION = '0.10.0'
 
-// 工具权限策略：文件工具的路径围栏 + run_shell 的放行决定。
-// read/edit 暴露内容 → 用 readPaths（含敏感文件防护）；write 仅落盘 → 用 writePaths（仅限根目录）。
-interface ToolPolicy {
-  readPaths: PathPolicy
-  writePaths: PathPolicy
-  shell: ShellPolicy
-  allowPrivateNet: boolean // web_fetch 是否允许私有/环回地址（仅 --yolo / 工作流）
-}
-
-// shells 存在时 run_shell 支持 background:true，并额外注册 bash_output/kill_shell。
-function makeRegistry(policy: ToolPolicy, shells?: BackgroundShells) {
-  const registry = new ToolRegistry()
-  const tools: Tool[] = [
-    makeReadTool(policy.readPaths),
-    makeWriteTool(policy.writePaths),
-    makeEditTool(policy.readPaths),
-    makeMultiEditTool(policy.readPaths),
-    makeBashTool(policy.shell, shells),
-    makeGlobTool(policy.readPaths),
-    makeGrepTool(policy.readPaths),
-    makeWebFetchTool({ allowPrivate: policy.allowPrivateNet }),
-    makeWebSearchTool(),
-  ]
-  if (shells) tools.push(makeBashOutputTool(shells), makeKillShellTool(shells))
-  tools.forEach((t) => registry.register(t))
-  return registry
-}
-
-// 自我保护用的上下文 token 预算（估算）。默认 0 = 关闭，不臆造 DeepSeek 窗口大小。
-const CONTEXT_TOKENS = Number(process.env.FLOOM_CONTEXT_TOKENS) || 0
-
-// --effort high/max 切换到的「thinking+工具」模型 id。**不预设默认值**（deepseek-reasoner
-// 不支持工具、文档示例的 deepseek-v4-pro 未在本账户实测，见 fact-check R2/R9）；
-// 由用户用真实 key 确认后自行填写。
-// --effort high/max 需要的 thinking+工具模型。默认复用基础模型（deepseek-v4-pro 已支持）。
-// 如果基础模型不支持 thinking，用 FLOOM_REASONER_MODEL 单独指定。
-const REASONER_MODEL = process.env.FLOOM_REASONER_MODEL || (process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro')
-
-// 单次响应的 max_tokens 上限（客户端请求参数，非模型固有窗口）。thinking 模型的 CoT 与
-// 最终答案共用此额度，4096 太小会截断答案，故默认调高到 8192；可用 FLOOM_MAX_TOKENS 覆盖。
-const MAX_TOKENS = Number(process.env.FLOOM_MAX_TOKENS) || 8192
-
-function makeSession(model: string, policy: ToolPolicy, shells?: BackgroundShells) {
-  const primary = new DeepSeekClient({ model })
-  // 如果配置了 fallback 模型，创建多模型路由器（含熔断器）
-  const fallbackModel = process.env.FLOOM_FALLBACK_MODEL
-  const fallbackKey = process.env.FLOOM_FALLBACK_API_KEY
-  const fallbackUrl = process.env.FLOOM_FALLBACK_BASE_URL
-  const client: ModelClient = fallbackModel && fallbackKey
-    ? new ModelRouter([
-        { client: primary, name: `deepseek:${model}` },
-        { client: new DeepSeekClient({ model: fallbackModel, apiKey: fallbackKey, baseURL: fallbackUrl }), name: `fallback:${fallbackModel}` },
-      ])
-    : primary
-
-  return createSession({
-    client,
-    registry: makeRegistry(policy, shells),
-    system: makeSystem(model),
-    model,
-    maxTokens: MAX_TOKENS,
-    contextTokens: CONTEXT_TOKENS,
-  })
-}
-
-// 交互式 shell 审批：方向键菜单代替手输 y/N；可选「本会话不再询问」。
-// label 用于在提示里标注来源（如子 agent），让用户知道在给谁授权。
-// 注意：每次调用产生**独立的 allowAll 状态**——子 agent 必须用自己的实例，
-// 否则在子 agent 里选「不再询问」会泄漏到父 agent，跨信任边界关闭确认。
-function makeInteractiveShell(label = ''): ShellPolicy {
-  let allowAll = false
-  return {
-    authorize: async (cmd) => {
-      if (allowAll) return true
-      stopActiveSpinner() // 停掉工具 spinner，把终端让给菜单
-      const shown = cmd.length > 200 ? cmd.slice(0, 200) + '…' : cmd
-      const choice = await selectMenu(
-        [fmt.yellow(`⚠ ${label}run_shell wants to execute:`), '  ' + fmt.cyan(shown), ''],
-        [
-          { label: 'Yes', value: 'yes' },
-          { label: "Yes, and don't ask again this session", value: 'always' },
-          { label: 'No', value: 'no' },
-        ],
-      )
-      if (choice === 1) {
-        allowAll = true
-        return true
-      }
-      return choice === 0 // 0=Yes；2/-1(No/取消)=拒绝
-    },
-  }
-}
-
-// 会话持久化：每个项目的会话存在 .floom/sessions/ 下
-function sessionStore(): SessionStore {
-  return new SessionStore(resolve(process.cwd(), '.floom', 'sessions'))
-}
-
-function makeSessionId(): string {
-  const ts = new Date().toISOString().replace(/[:.]/g, '-')
-  const rand = Math.random().toString(36).slice(2, 8)
-  return `s-${ts}-${rand}`
-}
-
-function sessionsText(store: SessionStore): string {
-  const metas = store.list()
-  if (metas.length === 0) {
-    return fmt.dim('No saved sessions in this project (.floom/sessions).')
-  }
-  const lines = metas.map(
-    (m) => `  ${fmt.cyan(m.id)}  ${fmt.dim(m.updatedAt)}  ${fmt.dim(`(${m.messageCount} msgs · ${m.model})`)}  ${m.title}`,
-  )
-  return fmt.bold(`Saved sessions (${metas.length}):`) + '\n' + lines.join('\n')
-}
+// 会话工厂、工具注册、权限策略等核心构造逻辑已提取到 session-factory.ts。
+// 以下仅保留 CLI 特有的输出函数 printSessions（写 stderr，依赖 sessionsText）。
 
 function printSessions(store: SessionStore): void {
   process.stderr.write(sessionsText(store) + '\n')
@@ -599,7 +480,26 @@ program
       session.registry.register(makeGitDiffTool())
       session.registry.register(makeGitLogTool())
       session.registry.register(makeGitBranchTool())
-      session.registry.register(makeGitCommitTool(shell))
+      // Git commit 用独立 shell policy 实例——避免「bash 不再询问」泄漏到 commit 确认
+      const gitCommitShell = yolo ? allowAllShell : canPrompt ? makeInteractiveShell('git-commit ') : denyAllShell
+      session.registry.register(makeGitCommitTool(gitCommitShell))
+      session.registry.register(makeGitStatusTool())
+      session.registry.register(makeGitStashTool())
+      session.registry.register(makeGitWorktreeTool())
+      session.registry.register(makeGitFetchTool())
+      session.registry.register(makeGitPushTool(gitCommitShell))
+      session.registry.register(makeGitPullTool(gitCommitShell))
+      session.registry.register(makeGitMergeTool())
+      session.registry.register(makeGitRebaseTool(gitCommitShell))
+      session.registry.register(makeGitResetTool(gitCommitShell))
+      session.registry.register(makeGitRevertTool())
+      session.registry.register(makeGitBlameTool())
+      session.registry.register(makeGitTagTool())
+      // Task 系统
+      const taskStore = new TaskStore(process.cwd())
+      session.registry.register(makeTaskCreateTool(taskStore))
+      session.registry.register(makeTaskUpdateTool(taskStore))
+      session.registry.register(makeTaskListTool(taskStore))
       // Cron 定时任务
       const cronStore = new CronStore(resolve(process.cwd(), '.floom', 'cron.db'))
       const cronScheduler = new CronScheduler(cronStore, (entry) => {
@@ -879,7 +779,7 @@ program
       // slash 命令的副作用边界：把活动会话/存储包装成 ctx 注入纯路由器
       let currentEffort = opts.effort
       const swapModel = (id: string) => {
-        session.client = new DeepSeekClient({ model: id })
+        session.client = getFactory().createClient(id)
         session.model = id
         refreshSystem() // 据当前 plan 状态重算 system（换模型不应丢掉计划模式须知）
       }
@@ -928,15 +828,34 @@ program
               if (skill) {
                 process.stderr.write(fmt.dim(`  ⚡ ${skill.name}: ${skill.description}\n`))
                 const savedSystem = session.system
+                // 工具过滤：readOnly 或 toolAllowlist → 只暴露允许的工具
+                const allowlist = skillRegistry.getToolAllowlist(slash.skill)
+                const savedRegistry = allowlist ? session.registry : null
+                if (allowlist) {
+                  const filtered = new ToolRegistry()
+                  for (const name of allowlist) {
+                    const t = session.registry.get(name)
+                    if (t) filtered.register(t)
+                  }
+                  session.registry = filtered
+                }
                 try {
-                  session.system = skill.systemPrompt
+                  // 技能参数化：${args} / ${1} ${2} ... 替换
+                  let prompt = skill.systemPrompt
+                  if (slash.skillArgs) {
+                    const argsArr = slash.skillArgs.split(/\s+/).filter(Boolean)
+                    prompt = prompt.replace(/\$\{args\}/g, slash.skillArgs)
+                    argsArr.forEach((a, i) => { prompt = prompt.replace(new RegExp(`\\$\\{${i + 1}\\}`, 'g'), a) })
+                  }
+                  session.system = prompt
                   try {
-                    await runTurnWithUI(session, line, write, ui)
+                    await runTurnWithUI(session, `${line}`, write, ui)
                   } catch (e) {
                     process.stderr.write(fmt.red(`\n  ✗ ${formatApiError(e)}\n`))
                   }
                 } finally {
                   session.system = savedSystem
+                  if (savedRegistry) session.registry = savedRegistry
                 }
               } else {
                 process.stderr.write(fmt.yellow(`  ⚠ unknown skill: /${slash.skill}\n`))
@@ -1040,7 +959,7 @@ program
       // 工作流是开发者显式编写的批处理脚本，且已有独立的临时 Workspace 隔离，
       // 不适合逐条确认 shell，也不能把文件工具限死在 cwd（会拦住 workspace 临时目录写入）。
       const registry = makeRegistry({ readPaths: allowAllPaths, writePaths: allowAllPaths, shell: allowAllShell, allowPrivateNet: true })
-      const client = new DeepSeekClient({ model: opts.model })
+      const client = getFactory().createClient(opts.model)
       let args: Record<string, unknown> = {}
       try {
         args = JSON.parse(opts.args)

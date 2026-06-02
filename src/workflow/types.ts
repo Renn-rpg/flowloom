@@ -113,10 +113,12 @@ export interface RuntimeContext {
   ): Promise<unknown>
 }
 
-// agent-executor 返回结果（文本 + 用量，供 journal 落盘用）
+// agent-executor 返回结果（文本 + 用量，供 journal 落盘用）。
+// 若使用了 StructuredAgentOpts.schema，object 为解析出的结构化数据。
 export interface AgentResult {
   text: string
   usage: { inputTokens: number; outputTokens: number; cacheHitTokens: number }
+  object?: Record<string, unknown>
 }
 
 // executeWorkflow 入参

@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename } from 'node:fs/promises'
+import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import type { Tool } from './types.js'
 import { type PathPolicy, allowAllPaths } from './permissions.js'
@@ -52,7 +52,12 @@ export function makeMultiEditTool(paths: PathPolicy = allowAllPaths): Tool {
       // 原子写入：先写临时文件再 rename，避免 TOCTOU 竞态与中途崩溃文件损坏
       const tmpPath = join(dirname(path), `.floom-medit-${Math.random().toString(36).slice(2)}.tmp`)
       await writeFile(tmpPath, content, 'utf8')
-      await rename(tmpPath, path)
+      try {
+        await rename(tmpPath, path)
+      } catch {
+        try { await unlink(tmpPath) } catch { /* best-effort */ }
+        throw new Error(`Failed to replace ${path}: rename failed`)
+      }
       return `edited ${path} (${edits.length} edits)`
     },
   }

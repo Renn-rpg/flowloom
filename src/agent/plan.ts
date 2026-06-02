@@ -13,6 +13,7 @@ export const PLAN_MODE_READONLY = new Set([
   'glob',
   'grep',
   'web_fetch',
+  'web_search',
   'exit_plan_mode',
 ])
 

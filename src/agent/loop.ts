@@ -93,11 +93,13 @@ export async function runTurn(
     // 保存快照：若 generate 异常，恢复消息数组以避免工具结果孤儿
     const snapshotLen = s.messages.length
 
+    // 缓存 specs 避免同一次迭代中重复创建数组
+    const tools = s.registry.specs()
+
     // 上下文上限保护：发请求前若估算 token 超预算。优先「语义压缩」——把最旧的对话轮摘要成
     // 一段「早前对话摘要」折叠进 system，保留要点;摘要失败或无可压缩的旧轮时回退到「整轮丢弃」。
     // 当前轮（最新 user 及其后续）始终保留，故多轮工具调用中不会丢掉进行中的上下文。
     if (s.contextTokens > 0) {
-      const tools = s.registry.specs()
       if (estimateTokens(s.system, s.messages, tools) > s.contextTokens) {
         let compacted = false
         if (s.autoCompact) {
@@ -162,7 +164,7 @@ export async function runTurn(
         {
           system: s.system,
           messages: s.messages,
-          tools: s.registry.specs(),
+          tools, // 复用缓存的 specs()
           model: s.model,
           maxTokens: s.maxTokens,
         },
