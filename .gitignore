@@ -11,3 +11,8 @@ vm-escape-test.mjs
 vm-mitigation-test.mjs
 _verify_*.mjs
 dynamic-workflow-showcase.mjs
+coverage/
+*.log
+Thumbs.db
+.DS_Store
+_repro*.test.ts

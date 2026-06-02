@@ -31,7 +31,31 @@ $env:DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 | 15 | 是否有生产级 vision（图像/PDF 理解） | 查文档 | ❓ | 决定 Read 工具对图片/PDF 是否降级 |
 | 16 | 是否支持 `strict` 模式（schema 服务端校验，beta） | 试 base_url=.../beta + strict:true | ❓ | 若可用，优先开启降低修复频率 |
 
+## deepseek-reasoner / thinking mode 专项（📄 官方文档核验，**待真机复核**）
+
+> 来源：`api-docs.deepseek.com/guides/reasoning_model`、`/guides/thinking_mode`、`/api/create-chat-completion`（2025–2026 版）。
+> 标记 📄 = 文档明确陈述但**尚未用真实 key 实测**；不得当作 ✅ 实测结论。
+
+| # | 项 | 状态 | 文档原文 / 结论 | 来源页 |
+|---|---|------|----------------|--------|
+| R1 | `deepseek-reasoner` 是真实 model id | 📄 | 是；推理模型页以该 id 为准 | reasoning_model |
+| R2 | **`deepseek-reasoner` 是否支持 Function Calling** | 📄❌ | **不支持**：「NOT Supported: Function Calling、FIM (Beta)」；支持「Json Output、Chat Completion、Chat Prefix Completion」 | reasoning_model |
+| R3 | `deepseek-reasoner` 采样参数 | 📄 | temperature/top_p/presence_penalty/frequency_penalty **不报错但无效**；logprobs/top_logprobs **报错** | reasoning_model |
+| R4 | `deepseek-reasoner` max_tokens | 📄 | 默认 **32K**、最大 **64K**，**含 CoT(`reasoning_content`)+ 最终答案(`content`)**。输入 context 窗口该页**未给** → 仍**勿假设** | reasoning_model |
+| R5 | CoT 字段名与位置 | 📄 | `reasoning_content`，与 `content` **同级**、独立字段 | reasoning_model / thinking_mode / API ref |
+| R6 | 流式 / 非流式取 CoT | 📄 | 流式 `chunk.choices[0].delta.reasoning_content`；非流式 `choices[0].message.reasoning_content` | API ref |
+| R7 | 多轮历史处理（**非工具轮**） | 📄 | 下一轮**必须剥掉** `reasoning_content`：把它带进输入 messages 会 **400**（reasoning_model）；thinking mode 下则「被忽略」 | reasoning_model / thinking_mode |
+| R8 | 多轮历史处理（**工具轮**） | 📄 | 发生过 tool call 的轮，`reasoning_content` **必须原样回传**所有后续请求，否则 **400** | thinking_mode |
+| R9 | thinking mode 是否支持工具调用 | ✅ | 「The DeepSeek model's thinking mode supports tool calls.」该指南示例 model id 为 `deepseek-v4-pro`（**非** `deepseek-reasoner`）。**用户已实测 `deepseek-v4-pro` 在本账户可跑通**，现已设为默认 `DEEPSEEK_MODEL` | thinking_mode + 用户实测 |
+
+**设计影响（关键）**：
+- ❌ 不能让 `--effort high` 把 agent 循环模型直接换成 `deepseek-reasoner`——它不支持工具，会打断工具循环。
+- 「带工具的思考」需要 thinking-mode 模型（文档示例 `deepseek-v4-pro`），但其 id 未在本账户实测，**勿假设存在**——交由用户用真实 key 填 `FLOOM_REASONER_MODEL`。
+- 三方案的共同地基（协议层捕获 `reasoning_content` 供显示）零假设、可先落地。
+- 若将来走 thinking+工具循环，**必须**实现「工具轮回传 reasoning_content」否则 400（R8）。
+
 ## 结论摘要（填完后写）
-- 选定默认 `DEEPSEEK_MODEL` = `____`（写入 `.env`）
-- 工具调用可靠率基线 = ____%（决定阶段2修复管线强度）
-- 已证伪/需绕开的假设：____
+- 选定默认 `DEEPSEEK_MODEL` = `deepseek-v4-pro`（thinking+工具模型，用户已实测可用）；`deepseek-chat` 作为更快/更省的备选
+- 单次响应 `max_tokens` 默认 8192（`FLOOM_MAX_TOKENS` 可覆盖）：thinking 模型 CoT+答案共用额度，4096 太小会截断
+- 工具调用可靠率基线 = 10/10（0% 坏 JSON，样本小，建议扩到 50+）
+- 已证伪/需绕开的假设：`deepseek-reasoner` **不能**作 agentic 工具循环模型（R2，📄待真机复核）；reasoner max output 32K/64K 含 CoT（R4）

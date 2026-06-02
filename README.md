@@ -7,6 +7,7 @@
 **An open-source, DeepSeek-native agentic coding CLI —— infinitely close to Claude Code.**
 
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
+[![Version](https://img.shields.io/badge/version-0.8.0-blue)](https://github.com/Renn-rpg/flowloom)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
@@ -29,8 +30,8 @@ $ floom "Add unit tests for the auth module"
 | | Claude Code | FlowLoom |
 |---|---|---|
 | Model | Claude (Anthropic API) | **DeepSeek** (OpenAI-compatible) |
-| Price | $15/M tokens | **$0.28/M tokens** (53x cheaper) |
-| Max context | 200K | Up to 1M (DeepSeek) |
+| Price | $15/M tokens (Claude) | **Significantly cheaper** — see [DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing) |
+| Max context | 200K | DeepSeek context TBD — see [fact check](docs/deepseek-fact-check.md#核验表) |
 | Workflow engine | Dynamic Workflow | **Dynamic Workflow** (Turing-complete) |
 | Open source | ❌ | ✅ MIT |
 | Prefix caching | ✅ | ✅ Auto (DeepSeek built-in) |
@@ -44,7 +45,7 @@ $ floom "Add unit tests for the auth module"
 node --version  # v24.15.0+
 
 # Install
-git clone https://github.com/user/flowloom.git
+git clone https://github.com/Renn-rpg/flowloom.git
 cd flowloom
 npm install && npm run build
 
@@ -106,7 +107,16 @@ FlowLoom iterates: reads files → finds TODOs → calls GitHub API → reports.
 | `read_file` | Read UTF-8 text files |
 | `write_file` | Write files (auto-creates directories) |
 | `edit_file` | Exact, unique string replacement |
-| `run_shell` | Execute shell commands (pwsh on Windows, bash elsewhere) |
+| `multi_edit` | Several exact replacements in one file, applied in order |
+| `run_shell` | Execute shell commands (pwsh on Windows, bash elsewhere); `background:true` for long-running ones |
+| `bash_output` | Read new output from a [background](docs/background-tasks.md) shell |
+| `kill_shell` | Stop a background shell |
+| `glob` | Find files by name pattern |
+| `grep` | Search file contents (ripgrep-style regex) |
+| `web_fetch` | Fetch a URL and read it as text/markdown |
+| `dispatch_agent` | Delegate a self-contained subtask to an isolated [sub-agent](docs/subagents.md) |
+
+Plus **MCP tools**: connect external [Model Context Protocol](docs/mcp.md) servers via `.floom/mcp.json` and their tools appear to the agent as `mcp__<server>__<tool>`.
 
 ### 🔄 Dynamic Workflow Engine
 
@@ -142,6 +152,7 @@ floom run audit.mjs --budget 500000 --sandbox vm
 - `pipeline(items, ...stages)` — process items through stages
 - `phase(title)` / `log(msg)` — progress output
 - `budget` — token cost tracking and limits
+- `workflow(name, args?)` — run a sub-workflow script (one level of nesting)
 
 ### ⚡ Streaming & Responsiveness
 
@@ -152,7 +163,7 @@ Real-time token streaming via `onText` callback. See the model think as it works
 - **Exponential backoff retry** — 429/5xx/network errors, configurable
 - **Per-request timeout** — default 60s, prevents hanging
 - **Token budget enforcement** — hard cap with pre-check, `BudgetExhaustedError`
-- **Concurrency limiter** — `min(16, cores-2)` Semaphore
+- **Concurrency limiter** — Semaphore defaulting to `max(1, min(16, cores-2))` (floors at 1)
 - **Agent count cap** — 1000 per workflow
 
 ### 📊 Cost Visibility
@@ -164,6 +175,25 @@ Every turn prints token usage to stderr:
 ```
 
 DeepSeek's **automatic prefix caching** is detected and reported, so you know exactly how much you save.
+
+### 🔒 Tool Hooks (PreToolUse)
+
+Control what the agent can do **before it happens** — gate every tool call with allow/deny/ask decisions:
+
+```json
+// .floom/hooks.json
+{
+  "hooks": [
+    { "pattern": "run_shell", "decision": "ask", "note": "confirm dangerous commands" },
+    { "pattern": "edit_file", "decision": "allow" },
+    { "pattern": "glob|grep|web_fetch|read_file", "decision": "allow" }
+  ]
+}
+```
+
+Each hook is a regex-matched decision: `allow` (pass through silently), `deny` (block with a reason), or `ask` (prompt the user to approve/deny). Hooks compose with Plan Mode — when plan mode is active, mutating tools are read-only regardless of hook rules.
+
+See [docs/hooks.md](docs/hooks.md) for the full reference.
 
 ### 💾 Deterministic Resume
 
@@ -223,10 +253,22 @@ Every workflow run gets a temporary directory. File operations stay inside. Abso
 # Single-shot task
 floom "Add JSDoc comments to src/utils.ts"
 
-# Interactive REPL
+# Interactive REPL (type a task in natural language; the agent picks tools)
 floom
-floom> read_file src/index.ts
+floom> add a unit test for the parser and run it
+floom> /help          # type / to pop the command menu (arrow keys + Enter)
 floom> /exit
+
+Agent options:
+  -m, --model <id>       Model ID (default: deepseek-v4-pro)
+  -e, --effort <level>   Reasoning effort: high/max → FLOOM_REASONER_MODEL thinking model
+  --plan                 Start in plan mode (read-only; propose a plan before changes)
+  --verbose              Stream model thinking live (default: collapsed, Ctrl+O to expand)
+  --yolo                 Disable path confinement + shell confirmation
+  -r, --resume [id]      Resume a saved session (most recent if no id)
+  --list-sessions        List saved sessions and exit
+
+# Slash commands (in the REPL): /help /model /effort /plan /clear /usage /save /sessions /exit
 
 # Workflow execution
 floom run script.mjs [options]
@@ -256,13 +298,15 @@ We ran a 10-task **tool-calling probe** against the DeepSeek API before building
 
 This refuted a pessimistic research report that assumed 80-90% JSON reliability. DeepSeek's tool calling is production-grade.
 
+All DeepSeek claims above are backed by [docs/deepseek-fact-check.md](docs/deepseek-fact-check.md) — the project's single source of truth for model facts. Claims marked ❓ are intentionally left unverified; we don't invent numbers.
+
 ---
 
 ## Development
 
 ```bash
 npm install        # Install dependencies
-npm test           # Run 100 tests (Vitest)
+npm test           # Run 345 tests (Vitest)
 npm run test:watch # Watch mode
 npm run dev        # tsx hot-reload
 npm run build      # Compile TypeScript
@@ -289,8 +333,13 @@ npm run probe      # Tool-calling reliability probe (needs API key)
 | Phase 3a | ✅ | Canonical hash, SQLite journal, vm sandbox, agent executor, resume |
 | Phase 3b | ✅ | Semaphore, budget enforcement, nested workflow, `floom run` CLI |
 | Phase 3c | ✅ | Sandbox integration, workspace isolation, import cache fix |
-| Phase 4 | 🚧 | Open-source release (README, logo, docs) |
-| Phase 5 | 📋 | Prompt caching optimization, MCP support |
+| Phase 4 | ✅ | Open-source scaffolding (README, logo, docs) |
+| Phase 5 | ✅ | `glob`/`grep`/`web_fetch`/`multi_edit` tools, [reasoning-effort tier](docs/repl-ui.md), [slash commands](docs/repl-ui.md), [PreToolUse hooks](docs/hooks.md), [MCP client](docs/mcp.md), session resume |
+| Phase 6 | ✅ | Interactive UX: `/` command autocomplete + arrow-key menus, collapsible thinking (`Ctrl+O` to expand), diff rendering, workflow progress |
+| Phase 7 | ✅ | [Sub-agents](docs/subagents.md): `dispatch_agent` tool — main agent delegates isolated subtasks (own context, shared tools/permissions, depth-capped) |
+| Phase 8 | ✅ | [Plan Mode](docs/plan-mode.md): read-only research → `exit_plan_mode` proposes a plan → approve to unlock edits (`/plan` or `--plan`) |
+| Phase 9 | ✅ | [Background tasks](docs/background-tasks.md): `run_shell background:true` + `bash_output` / `kill_shell` for servers/watchers/builds |
+| Next | 📋 | git/worktree tools, semantic compaction, PostToolUse hooks |
 
 ---
 

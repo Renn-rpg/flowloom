@@ -13,6 +13,9 @@ export interface ToolResult { toolCallId: string; content: string; isError: bool
 export interface InternalMessage {
   role: Role
   text?: string
+  // 思考链。仅在 thinking 模型的「工具轮」assistant 上保留并回传（fact-check R8：
+  // 工具轮不回传 reasoning_content 会触发 400）。非工具轮的终态 assistant 不存它（R7：下一轮须剥掉）。
+  reasoningText?: string
   toolCalls?: ToolCall[]   // assistant
   toolResults?: ToolResult[] // tool/user 回传
 }
@@ -32,6 +35,13 @@ export interface GenerateResult {
   toolCalls: ToolCall[]
   stopReason: StopReason
   usage: { inputTokens: number; outputTokens: number; cacheHitTokens?: number }
+  // 思考链（仅推理/thinking 模型返回；deepseek-chat 不返回则为 undefined）。
+  // 模型无关命名：内部不感知这是 DeepSeek 的 reasoning_content。
+  reasoningText?: string
 }
 
-export interface GenerateOptions { onText?: (delta: string) => void }
+export interface GenerateOptions {
+  onText?: (delta: string) => void
+  // 思考链增量（推理模型流式时逐块回吐）。普通模型永不触发。
+  onReasoning?: (delta: string) => void
+}

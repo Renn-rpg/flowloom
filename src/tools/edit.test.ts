@@ -24,4 +24,9 @@ describe('editTool', () => {
     await writeFile(file, 'x\nx\n', 'utf8')
     expect(await editTool.handler({ path: file, old_string: 'x', new_string: 'y' })).toContain('not unique')
   })
+  it('treats $-sequences in new_string literally (no special replacement patterns)', async () => {
+    const r = await editTool.handler({ path: file, old_string: 'foo bar', new_string: 'price $& $1 $`' })
+    expect(r).toContain('edited')
+    expect(await readFile(file, 'utf8')).toBe('hello world\nprice $& $1 $`\n')
+  })
 })

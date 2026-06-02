@@ -14,6 +14,16 @@ describe('toolIcon', () => {
   it('returns shell icon for run_shell', () => {
     expect(toolIcon('run_shell')).toBe('⚡')
   })
+  it('returns glob and grep icons', () => {
+    expect(toolIcon('glob')).toBe('🔍')
+    expect(toolIcon('grep')).toBe('🔎')
+  })
+  it('returns multi_edit icon', () => {
+    expect(toolIcon('multi_edit')).toBe('🛠️')
+  })
+  it('returns web_fetch icon', () => {
+    expect(toolIcon('web_fetch')).toBe('🌐')
+  })
   it('returns default icon for unknown tools', () => {
     expect(toolIcon('some_new_tool')).toBe('🔨')
   })

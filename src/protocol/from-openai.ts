@@ -23,20 +23,23 @@ export function fromOpenAIResponse(resp: any): GenerateResult {
     toolCalls,
     stopReason: mapStop(choice.finish_reason ?? ''),
     usage: { inputTokens: resp.usage?.prompt_tokens ?? 0, outputTokens: resp.usage?.completion_tokens ?? 0, cacheHitTokens: resp.usage?.prompt_cache_hit_tokens ?? 0 },
+    reasoningText: msg.reasoning_content || undefined, // 推理模型才有；与 content 同级的独立字段
   }
 }
 
 export class StreamAccumulator {
   private textBuf = ''
+  private reasoningBuf = ''
   private calls = new Map<number, { id: string; name: string; args: string }>()
   private finish = ''
   private usage = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 }
 
-  // 返回本 chunk 的文本增量（供实时输出）
-  addChunk(chunk: any): string {
+  // 返回本 chunk 的文本增量与思考链增量（供实时输出）。
+  // reasoning_content 与 content 同级、互斥成块：推理模型先吐 CoT 再吐答案。
+  addChunk(chunk: any): { text: string; reasoning: string } {
     if (chunk?.usage) this.usage = { inputTokens: chunk.usage.prompt_tokens ?? 0, outputTokens: chunk.usage.completion_tokens ?? 0, cacheHitTokens: chunk.usage.prompt_cache_hit_tokens ?? 0 }
     const choice = chunk?.choices?.[0]
-    if (!choice) return ''
+    if (!choice) return { text: '', reasoning: '' }
     if (choice.finish_reason) this.finish = choice.finish_reason
     const delta = choice.delta ?? {}
     for (const tc of delta.tool_calls ?? []) {
@@ -48,14 +51,22 @@ export class StreamAccumulator {
       this.calls.set(idx, cur)
     }
     const textDelta = typeof delta.content === 'string' ? delta.content : ''
+    const reasoningDelta = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : ''
     this.textBuf += textDelta
-    return textDelta
+    this.reasoningBuf += reasoningDelta
+    return { text: textDelta, reasoning: reasoningDelta }
   }
 
   result(): GenerateResult {
     const toolCalls: ToolCall[] = [...this.calls.entries()]
       .sort((a, b) => a[0] - b[0])
       .map(([, c]) => ({ id: c.id, name: c.name, input: safeParseArgs(c.args || '{}') }))
-    return { text: this.textBuf, toolCalls, stopReason: mapStop(this.finish), usage: this.usage }
+    return {
+      text: this.textBuf,
+      toolCalls,
+      stopReason: mapStop(this.finish),
+      usage: this.usage,
+      reasoningText: this.reasoningBuf || undefined,
+    }
   }
 }

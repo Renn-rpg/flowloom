@@ -47,6 +47,13 @@ describe('Workspace', () => {
     expect(resolved).toBe(join(ws.root, 'a', 'b', 'c', 'file.txt'))
   })
 
+  it('resolve allows filenames that merely contain dots (no false positive on "..")', async () => {
+    const ws = await makeWs()
+    const resolved = ws.resolve('foo..bar/baz..qux.txt')
+    expect(resolved).toBe(join(ws.root, 'foo..bar', 'baz..qux.txt'))
+    expect(resolved.startsWith(ws.root)).toBe(true)
+  })
+
   it('files written to workspace are inside workspace', async () => {
     const ws = await makeWs()
     const p = ws.resolve('test.txt')

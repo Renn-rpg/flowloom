@@ -1,6 +1,7 @@
 {
   "name": "flowloom",
-  "version": "0.0.1",
+  "version": "0.8.0",
+  "description": "An open-source, DeepSeek-native agentic coding CLI — infinitely close to Claude Code.",
   "type": "module",
   "bin": {
     "floom": "./dist/cli.js"
@@ -8,12 +9,41 @@
   "engines": {
     "node": ">=24"
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Renn-rpg/flowloom.git"
+  },
+  "keywords": [
+    "deepseek",
+    "agentic",
+    "coding",
+    "cli",
+    "ai",
+    "workflow",
+    "llm",
+    "code-assistant",
+    "flowloom",
+    "claude-code"
+  ],
+  "author": "FlowLoom Contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/Renn-rpg/flowloom#readme",
+  "bugs": {
+    "url": "https://github.com/Renn-rpg/flowloom/issues"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "probe": "tsx scripts/probe.ts"
+    "probe": "tsx scripts/probe.ts",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "chalk": "^5.6.2",

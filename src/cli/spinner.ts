@@ -1,7 +1,17 @@
 import ora, { type Ora } from 'ora'
 
+// 记录当前活跃 spinner，供交互式确认（如 run_shell 询问）在提问前暂停动画，
+// 避免 ora 在 stderr 上的 \r 刷新覆盖 readline 的提示行。
+let active: Ora | null = null
+
 export function createSpinner(text: string): Ora {
-  return ora({ text, stream: process.stderr, spinner: 'dots' }).start()
+  active = ora({ text, stream: process.stderr, spinner: 'dots' }).start()
+  return active
+}
+
+export function stopActiveSpinner(): void {
+  active?.stop()
+  active = null
 }
 
 export function toolIcon(name: string): string {
@@ -12,8 +22,16 @@ export function toolIcon(name: string): string {
       return '✏️'
     case 'edit_file':
       return '🔧'
+    case 'multi_edit':
+      return '🛠️'
     case 'run_shell':
       return '⚡'
+    case 'glob':
+      return '🔍'
+    case 'grep':
+      return '🔎'
+    case 'web_fetch':
+      return '🌐'
     default:
       return '🔨'
   }

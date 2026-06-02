@@ -89,11 +89,16 @@ export async function executeWorkflow(
     totalCacheHitTokens: 0,
   })
 
+  // 开跑横幅：Enter 后立刻给反馈，避免长任务"看起来没动静"的错觉
+  process.stderr.write(
+    `\n▶ running workflow "${userMeta.name ?? 'workflow'}" (budget ${opts.budgetLimit ?? 1_000_000} tok)…\n`,
+  )
+
   // Phase 3: 构建执行环境 — 所有共享实例
   const executor = new AgentExecutor({
     client: opts.client,
     registry: opts.registry,
-    defaultModel: opts.model ?? 'deepseek-v4-pro',
+    defaultModel: opts.model ?? 'deepseek-chat',
     defaultMaxTokens: opts.maxTokens ?? 4096,
     defaultSystem: opts.system ?? 'You are a coding agent.',
   })
@@ -131,6 +136,7 @@ export async function executeWorkflow(
     if (inPrefix && seq < priorCalls.length) {
       const prev = priorCalls[seq]
       if (prev && prev.callHash === callHash && prev.status === 'done') {
+        process.stderr.write(`  ⟳ [${seq}] cached\n`)
         seq++
         cachedCalls++
         try {
@@ -151,15 +157,26 @@ export async function executeWorkflow(
       throw new Error(`agent count limit (${MAX_AGENTS}) exceeded`)
     }
 
+    // seq 在任何可抛异常（信号量/预算）之前同步分配：保证唯一、单调，
+    // 且在 parallel() 下按 thunk 调用顺序确定（利于 resume）。错误路径复用同一 seq，
+    // 避免用 seq-1 与上一条已成功记录的 (runId, seq) 主键冲突被 INSERT OR REPLACE 覆盖。
+    const currentSeq = seq++
+    // 进度标签：优先用脚本传的 label/phase，否则泛称 agent
+    const label = String(agentOpts?.label ?? agentOpts?.phase ?? 'agent')
+
     // 硬控 2: 信号量获取（排队等待）
     const release = await semaphore.acquire()
 
+    let t0 = 0
     try {
       // 硬控 3: 预算预检（保守估计至少消耗 10 tokens）
       budget.assertHasBudget(10)
 
-      const currentSeq = seq++
       liveCalls++
+
+      // 实时进度：真正开跑时（拿到信号量后）落一行，避免长任务全程静默
+      process.stderr.write(`  → [${currentSeq}] ${label} …\n`)
+      t0 = Date.now()
 
       // 用 executor.agent() 拿 AgentResult（含 usage），而非 execute()
       const r = await executor.agent(prompt, agentOpts)
@@ -172,6 +189,10 @@ export async function executeWorkflow(
 
       // 记账：按实际 output tokens charge（+ input tokens 的保守估值）
       budget.charge(r.usage.outputTokens + r.usage.inputTokens)
+
+      process.stderr.write(
+        `  ✓ [${currentSeq}] ${label}  (${((Date.now() - t0) / 1000).toFixed(1)}s · ${r.usage.outputTokens} tok)\n`,
+      )
 
       const record: CallRecord = {
         runId,
@@ -187,13 +208,14 @@ export async function executeWorkflow(
       recordedCalls.push(record)
       return text
     } catch (e) {
-      if (e instanceof Error && e.name === 'BudgetExhaustedError') {
-        process.stderr.write(`[budget] ${e.message}\n`)
-      }
-      const currentSeq = seq - 1 // 回退到当前序号
+      const why =
+        e instanceof Error && e.name === 'BudgetExhaustedError'
+          ? 'budget exhausted'
+          : `failed: ${(e as Error).message}`
+      process.stderr.write(`  ✗ [${currentSeq}] ${label}  ${why}\n`)
       const record: CallRecord = {
         runId,
-        seq: currentSeq >= 0 ? currentSeq : liveCalls,
+        seq: currentSeq, // 复用进入时分配的 seq，避免主键冲突覆盖已成功记录
         callHash,
         status: 'failed',
         result: JSON.stringify({ error: (e as Error).message }),

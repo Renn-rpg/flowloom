@@ -4,6 +4,7 @@ interface OpenAIToolCall { id: string; type: 'function'; function: { name: strin
 interface OpenAIMessage {
   role: string
   content?: string | null
+  reasoning_content?: string // thinking 模型工具轮回传（fact-check R8）
   tool_calls?: OpenAIToolCall[]
   tool_call_id?: string
 }
@@ -22,11 +23,15 @@ function mapMessage(m: InternalMessage): OpenAIMessage {
     return { role: 'tool', tool_call_id: r.toolCallId, content: r.isError ? `ERROR: ${r.content}` : r.content }
   }
   if (m.role === 'assistant' && m.toolCalls?.length) {
-    return {
+    const msg: OpenAIMessage = {
       role: 'assistant',
       content: m.text ?? '',
       tool_calls: m.toolCalls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.input) } })),
     }
+    // R8：thinking 模型的工具轮必须回传 reasoning_content，否则后续请求 400。
+    // 普通模型（无 reasoningText）不附带该字段，保持原行为。
+    if (m.reasoningText) msg.reasoning_content = m.reasoningText
+    return msg
   }
   return { role: m.role, content: m.text ?? '' }
 }

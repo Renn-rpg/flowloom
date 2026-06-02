@@ -5,10 +5,10 @@ Thanks for your interest in contributing!
 ## Getting Started
 
 ```bash
-git clone https://github.com/user/flowloom.git
+git clone https://github.com/Renn-rpg/flowloom.git
 cd flowloom
 npm install
-npm test  # 100 tests should pass
+npm test  # 345 tests should pass
 ```
 
 ## Development Workflow

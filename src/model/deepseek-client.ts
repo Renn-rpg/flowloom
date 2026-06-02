@@ -35,15 +35,17 @@ export class DeepSeekClient implements ModelClient {
     const body = toOpenAIRequest({ ...req, model: this.model })
     const create = (extra: Record<string, unknown>) =>
       this.openai.chat.completions.create({ ...(body as any), ...extra }, { timeout: this.timeoutMs })
-    if (!opts?.onText) {
+    // 仅当调用方要看流式文本/思考链时才走 stream 分支
+    if (!opts?.onText && !opts?.onReasoning) {
       const resp = await withRetry(() => create({ stream: false }), { maxRetries: this.maxRetries })
       return fromOpenAIResponse(resp)
     }
     const stream: any = await withRetry(() => create({ stream: true, stream_options: { include_usage: true } }), { maxRetries: this.maxRetries })
     const acc = new StreamAccumulator()
     for await (const chunk of stream) {
-      const delta = acc.addChunk(chunk)
-      if (delta) opts.onText(delta)
+      const { text, reasoning } = acc.addChunk(chunk)
+      if (text) opts.onText?.(text)
+      if (reasoning) opts.onReasoning?.(reasoning) // 推理模型才会触发
     }
     return acc.result()
   }

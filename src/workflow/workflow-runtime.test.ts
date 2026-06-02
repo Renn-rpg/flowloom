@@ -167,6 +167,24 @@ export async function run(ctx) { ${body} }
     expect(r.result).toBe('done')
   })
 
+  it('emits live progress for each agent (start + done) to stderr', async () => {
+    const seen: string[] = []
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: any) => {
+      seen.push(String(chunk))
+      return true
+    })
+    try {
+      await makeScript('return await ctx.agent("task A", { label: "scout" })')
+      await run()
+    } finally {
+      spy.mockRestore()
+    }
+    const out = seen.join('')
+    expect(out).toContain('running workflow') // 开跑横幅
+    expect(out).toContain('→ [0] scout') // agent 启动行（含 label）
+    expect(out).toMatch(/✓ \[0\] scout/) // agent 完成行
+  })
+
   it('script can access args', async () => {
     await makeScript('return ctx.args.x + ctx.args.y')
     const r: WorkflowRunResult = await run({ x: 3, y: 4 })

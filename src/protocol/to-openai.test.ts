@@ -35,6 +35,23 @@ describe('toOpenAIRequest', () => {
     const m = out.messages.find((x) => x.role === 'assistant')!
     expect(m.tool_calls![0].function.arguments).toBe('{"path":"/a.ts"}')
   })
+  it('emits reasoning_content on the assistant tool-call message when present (thinking mode R8)', () => {
+    const out = toOpenAIRequest({
+      ...req,
+      messages: [{ role: 'assistant', reasoningText: 'I should read it', toolCalls: [{ id: 'c1', name: 'read_file', input: { path: '/a.ts' } }] }],
+    })
+    const m = out.messages.find((x) => x.role === 'assistant')! as Record<string, unknown>
+    expect(m.reasoning_content).toBe('I should read it')
+    expect((m.tool_calls as { function: { name: string } }[])[0].function.name).toBe('read_file')
+  })
+  it('omits reasoning_content when the assistant has no reasoningText', () => {
+    const out = toOpenAIRequest({
+      ...req,
+      messages: [{ role: 'assistant', toolCalls: [{ id: 'c1', name: 'read_file', input: {} }] }],
+    })
+    const m = out.messages.find((x) => x.role === 'assistant')! as Record<string, unknown>
+    expect(m).not.toHaveProperty('reasoning_content')
+  })
   it('maps tool result to role:tool with tool_call_id', () => {
     const out = toOpenAIRequest({
       ...req,

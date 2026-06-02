@@ -18,6 +18,7 @@ export function showWelcome(opts: {
   nodeVersion: string
   cwd: string
   isInteractive: boolean
+  safety?: string
 }): void {
   const title = ` FlowLoom v${opts.version} `
   const titleLen = title.length
@@ -38,12 +39,14 @@ export function showWelcome(opts: {
 
   out.push(blankLine)
 
-  for (const [label, value] of [
+  const rows: [string, string][] = [
     ['Model:   ', opts.model],
     ['Node:    ', `v${opts.nodeVersion}`],
     ['User:    ', user],
     ['CWD:     ', opts.cwd],
-  ] as const) {
+  ]
+  if (opts.safety) rows.push(['Safety:  ', opts.safety])
+  for (const [label, value] of rows) {
     out.push(border(chalk.dim(`  ${label}`) + chalk.green(value)))
   }
 
@@ -53,12 +56,23 @@ export function showWelcome(opts: {
     out.push(
       border(
         chalk.dim('  ') +
+          chalk.cyan('/') +
+          chalk.dim(' menu  ·  ') +
+          chalk.cyan('Tab/↑↓') +
+          chalk.dim(' pick  ·  ') +
+          chalk.cyan('Ctrl+O') +
+          chalk.dim(' expand thinking'),
+      ),
+    )
+    out.push(
+      border(
+        chalk.dim('  ') +
           chalk.cyan('/exit') +
           chalk.dim(' quit  ·  ') +
           chalk.cyan('Ctrl+C') +
           chalk.dim(' cancel  ·  ') +
-          chalk.cyan('#') +
-          chalk.dim(' session'),
+          chalk.cyan('--yolo') +
+          chalk.dim(' guards'),
       ),
     )
     out.push(blankLine)
