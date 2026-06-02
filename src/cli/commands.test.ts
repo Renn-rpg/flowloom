@@ -111,6 +111,11 @@ describe('runSlash', () => {
     expect(runSlash('/usage', fakeCtx()).output).toContain('out=5')
   })
 
+  it('/compact signals compaction (handled async by cli, no ctx mutation)', () => {
+    const r = runSlash('/compact', fakeCtx())
+    expect(r).toEqual({ handled: true, compact: true })
+  })
+
   it('/save persists and confirms', () => {
     const ctx = fakeCtx()
     expect(runSlash('/save', ctx).output).toBe('session saved')

@@ -28,29 +28,29 @@ export async function executeWorkflow(
   const journal = new SqliteJournal(opts.journalPath ?? ':memory:')
 
   // Phase 1: 完全命中快速路径
-  const prior = journal.lookupPrefix(scriptHash, argsHash, 1)
-  if (prior) {
+  const priorRun = journal.lookupPrefix(scriptHash, argsHash, 1)
+  if (priorRun) {
     let lastOutput: unknown = undefined
-    if (prior.calls.length > 0) {
-      const lastCall = prior.calls[prior.calls.length - 1]
+    if (priorRun.calls.length > 0) {
+      const lastCall = priorRun.calls[priorRun.calls.length - 1]
       try {
         const parsed = JSON.parse(lastCall.result)
         lastOutput = parsed?.output
       } catch { /* ignore */ }
     }
     process.stderr.write(
-      `[usage] all-cached live=0 cached=${prior.calls.length}\n`,
+      `[usage] all-cached live=0 cached=${priorRun.calls.length}\n`,
     )
     journal.close()
     return {
-      runId: prior.run.runId,
+      runId: priorRun.run.runId,
       status: 'done',
-      cachedCalls: prior.calls.length,
+      cachedCalls: priorRun.calls.length,
       liveCalls: 0,
       usage: {
-        inputTokens: prior.run.totalInputTokens,
-        outputTokens: prior.run.totalOutputTokens,
-        cacheHitTokens: prior.run.totalCacheHitTokens,
+        inputTokens: priorRun.run.totalInputTokens,
+        outputTokens: priorRun.run.totalOutputTokens,
+        cacheHitTokens: priorRun.run.totalCacheHitTokens,
       },
       result: lastOutput,
     }
@@ -112,8 +112,11 @@ export async function executeWorkflow(
   let cachedCalls = 0
   let liveCalls = 0
   let agentCount = 0
-  const priorCalls: CallRecord[] = [] // prior 为 null
-  let inPrefix = false
+  // 从已持久化的 run 中加载调用记录，用于前缀增量恢复。
+  // Phase 1 的完全命中路径已 early return，此处 priorRun 为 null。
+  // 重新查询一次以获取部分前缀数据（journal 内部缓存，开销可忽略）。
+  const priorCalls: CallRecord[] = journal.lookupPrefix(scriptHash, argsHash, 1)?.calls ?? []
+  let inPrefix = priorCalls.length > 0
   const recordedCalls: CallRecord[] = []
 
   // 总用量累计

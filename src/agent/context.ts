@@ -12,6 +12,7 @@ export function estimateTokens(
   let chars = system.length
   for (const m of messages) {
     if (m.text) chars += m.text.length
+    if (m.reasoningText) chars += m.reasoningText.length // thinking 模型思考链可达数千 token
     if (m.toolCalls) {
       for (const c of m.toolCalls) chars += c.name.length + JSON.stringify(c.input).length
     }
@@ -34,7 +35,8 @@ export interface TrimResult {
 
 // 把消息流切成「对话轮」：每个 user 消息开启新的一轮，其后的 assistant / tool
 // 消息归入该轮。runTurn 保证 messages[0] 一定是 user。
-function splitRounds(messages: InternalMessage[]): InternalMessage[][] {
+// 导出供 compaction 复用——压缩与裁剪共用同一套「整轮」边界，保证不变量一致。
+export function splitRounds(messages: InternalMessage[]): InternalMessage[][] {
   if (messages.length > 0 && messages[0].role !== 'user') {
     // 防御性检查：非正常消息流（如 corrupted session store），
     // 插入虚拟 user 消息确保后续 API 请求不产生孤儿 tool_call_id。

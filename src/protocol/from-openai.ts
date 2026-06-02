@@ -48,7 +48,7 @@ export class StreamAccumulator {
       const cur = this.calls.get(idx) ?? { id: '', name: '', args: '' }
       if (tc.id) cur.id = tc.id
       if (tc.function?.name) cur.name = tc.function.name
-      if (tc.function?.arguments) cur.args += tc.function.arguments // 增量累积，最后再 parse
+      if (typeof tc.function?.arguments === 'string') cur.args += tc.function.arguments // 增量累积，最后再 parse；防御 null/undefined
       this.calls.set(idx, cur)
     }
     const textDelta = typeof delta.content === 'string' ? delta.content : ''

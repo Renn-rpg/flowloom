@@ -1,7 +1,8 @@
 import type { ModelClient } from '../model/client.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import type { InternalMessage } from '../protocol/types.js'
-import { trimMessages } from './context.js'
+import { trimMessages, estimateTokens } from './context.js'
+import { compactMessages } from './compaction.js'
 
 // 工具执行闸：返回是否放行 + 拒绝说明。模型/UI 无关——hooks 评估与"ask"交互都在 cli 里实现，
 // loop 只看一个布尔结果。缺省（undefined）= 一律放行。
@@ -21,6 +22,8 @@ export interface AgentSession {
   gate?: ToolGate
   // 自我保护用的上下文 token 预算（估算）。<=0 或缺省 = 关闭，不做任何窗口假设。
   contextTokens: number
+  // 超预算时是否优先「语义压缩」（摘要最旧的轮）而非「整轮丢弃」。默认开；仅在 contextTokens>0 时才会触发。
+  autoCompact: boolean
   messages: InternalMessage[]
   usage: { inputTokens: number; outputTokens: number; cacheHitTokens: number }
 }
@@ -40,6 +43,12 @@ export interface RunTurnCallbacks {
     estimatedTokens: number
     overBudget: boolean
   }) => void
+  // 发请求前对过旧历史做了「语义压缩」（摘要折叠进 system）时触发，供调用方提示用户。
+  onContextCompact?: (info: {
+    summarizedRounds: number
+    estimatedTokens: number
+    summaryChars: number
+  }) => void
 }
 
 export function createSession(o: {
@@ -50,6 +59,7 @@ export function createSession(o: {
   maxTokens: number
   maxIters?: number
   contextTokens?: number
+  autoCompact?: boolean
   gate?: ToolGate
 }): AgentSession {
   return {
@@ -60,6 +70,7 @@ export function createSession(o: {
     maxTokens: o.maxTokens,
     maxIters: o.maxIters ?? 25,
     contextTokens: o.contextTokens ?? 0,
+    autoCompact: o.autoCompact ?? true,
     gate: o.gate,
     messages: [],
     usage: { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 },
@@ -82,18 +93,65 @@ export async function runTurn(
     // 保存快照：若 generate 异常，恢复消息数组以避免工具结果孤儿
     const snapshotLen = s.messages.length
 
-    // 上下文上限保护：发请求前若估算 token 超预算，从最旧对话轮整轮丢弃。
+    // 上下文上限保护：发请求前若估算 token 超预算。优先「语义压缩」——把最旧的对话轮摘要成
+    // 一段「早前对话摘要」折叠进 system，保留要点;摘要失败或无可压缩的旧轮时回退到「整轮丢弃」。
     // 当前轮（最新 user 及其后续）始终保留，故多轮工具调用中不会丢掉进行中的上下文。
     if (s.contextTokens > 0) {
-      const trim = trimMessages(s.system, s.messages, s.registry.specs(), s.contextTokens)
-      if (trim.droppedMessages > 0) {
-        s.messages = trim.messages
-        callbacks.onContextTrim?.({
-          droppedRounds: trim.droppedRounds,
-          droppedMessages: trim.droppedMessages,
-          estimatedTokens: trim.estimatedTokens,
-          overBudget: trim.overBudget,
-        })
+      const tools = s.registry.specs()
+      if (estimateTokens(s.system, s.messages, tools) > s.contextTokens) {
+        let compacted = false
+        if (s.autoCompact) {
+          try {
+            // 静默摘要（不传 onText/onReasoning），经 ModelClient 接口——agent 层不感知具体模型。
+            const c = await compactMessages({
+              client: s.client,
+              system: s.system,
+              messages: s.messages,
+              tools,
+              model: s.model,
+              budget: s.contextTokens,
+              maxTokens: s.maxTokens,
+            })
+            if (c) {
+              s.system = c.system
+              s.messages = c.messages
+              compacted = true
+              callbacks.onContextCompact?.({
+                summarizedRounds: c.summarizedRounds,
+                estimatedTokens: c.estimatedTokens,
+                summaryChars: c.summary.length,
+              })
+              // 二次保险：摘要本身也占 token，折叠进 system 后体量会变大。若（含新 system）仍超预算
+              // ——摘要偏大或保留轮本身很大——再叠加一次「整轮丢弃」把超出部分清掉，保证发请求前确实尽力落入预算。
+              if (c.estimatedTokens > s.contextTokens) {
+                const after = trimMessages(s.system, s.messages, tools, s.contextTokens)
+                if (after.droppedMessages > 0) {
+                  s.messages = after.messages
+                  callbacks.onContextTrim?.({
+                    droppedRounds: after.droppedRounds,
+                    droppedMessages: after.droppedMessages,
+                    estimatedTokens: after.estimatedTokens,
+                    overBudget: after.overBudget,
+                  })
+                }
+              }
+            }
+          } catch {
+            // 摘要调用失败（网络/超时等）→ 回退整轮丢弃，绝不打断本轮。
+          }
+        }
+        if (!compacted) {
+          const trim = trimMessages(s.system, s.messages, tools, s.contextTokens)
+          if (trim.droppedMessages > 0) {
+            s.messages = trim.messages
+            callbacks.onContextTrim?.({
+              droppedRounds: trim.droppedRounds,
+              droppedMessages: trim.droppedMessages,
+              estimatedTokens: trim.estimatedTokens,
+              overBudget: trim.overBudget,
+            })
+          }
+        }
       }
     }
 

@@ -29,14 +29,6 @@ export const fmt = {
   collapsedHint: (count: number, unit: string) =>
     chalk.dim(`  … +${count} ${unit} (ctrl+o to expand)`),
 
-  // 思考折叠显示
-  thinkingCollapsed: (ms: number) =>
-    chalk.dim(`  Thinking... (${(ms / 1000).toFixed(1)}s)`) + chalk.dim(' · ctrl+o to expand'),
-
-  // 思考展开标题
-  thinkingExpanded: (ms: number) =>
-    chalk.dim(`  ✻ Thinking (${(ms / 1000).toFixed(1)}s):`),
-
   // 输入框线条：'─' 填充到宽度
   inputLine: (width: number) =>
     chalk.white('─'.repeat(Math.max(0, width))),

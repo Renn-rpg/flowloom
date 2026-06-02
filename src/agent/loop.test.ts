@@ -131,7 +131,8 @@ describe('runTurn', () => {
   it('trims oldest rounds and fires onContextTrim when contextTokens is exceeded', async () => {
     const reg = new ToolRegistry()
     const client = scriptedClient([r({ text: 'a1' }), r({ text: 'a2' })])
-    const s = createSession({ client, registry: reg, system: 'sys', model: 'm', maxTokens: 100, contextTokens: 1500 })
+    // autoCompact:false → 走纯「整轮丢弃」路径（语义压缩另有专门用例覆盖）
+    const s = createSession({ client, registry: reg, system: 'sys', model: 'm', maxTokens: 100, contextTokens: 1500, autoCompact: false })
     const trims: number[] = []
     const bigText = 'x'.repeat(4000) // ~1000 token，单轮可容，两轮超 1500
     await runTurn(s, bigText) // turn 1：仅一轮，不裁剪
@@ -154,5 +155,83 @@ describe('runTurn', () => {
     await runTurn(s, bigText, { onContextTrim: () => { trimmed = true } })
     expect(trimmed).toBe(false)
     expect(s.messages.length).toBe(4) // 全部保留
+  })
+
+  // 区分「摘要请求」与「正常对话请求」：摘要请求由 buildSummaryRequest 构造，消息含 "Transcript to summarize"。
+  const isSummaryReq = (req: { messages: { text?: string }[] }) =>
+    req.messages.some((m) => typeof m.text === 'string' && m.text.includes('Transcript to summarize'))
+
+  it('auto-compacts oldest rounds into a system summary when over budget (autoCompact default on)', async () => {
+    const reg = new ToolRegistry()
+    let summaryReqs = 0
+    const client: ModelClient = {
+      generate: async (req) => {
+        if (isSummaryReq(req)) { summaryReqs++; return r({ text: 'CONDENSED' }) }
+        return r({ text: 'resp' })
+      },
+    }
+    const s = createSession({ client, registry: reg, system: 'sys', model: 'm', maxTokens: 100, contextTokens: 1500 })
+    const bigText = 'x'.repeat(4000) // ~1000 token/轮
+    const compacts: number[] = []
+    const trims: number[] = []
+    await runTurn(s, bigText) // 第一轮：单轮可容，不压缩
+    await runTurn(s, bigText + '_LATEST', {
+      onContextCompact: (info) => compacts.push(info.summarizedRounds),
+      onContextTrim: (info) => trims.push(info.droppedMessages),
+    })
+    expect(summaryReqs).toBe(1) // 触发了一次摘要调用
+    expect(compacts).toEqual([1]) // 压缩了最旧一轮，且走的是压缩而非裁剪
+    expect(trims).toEqual([])
+    expect(s.system).toContain('CONDENSED') // 摘要折叠进 system
+    expect(s.messages[0].text).toBe(bigText + '_LATEST') // 仅保留最新一轮
+    expect(s.messages.find((m) => m.text === bigText)).toBeUndefined() // 旧轮已被摘要替换
+  })
+
+  it('falls back to trimming when the summary call fails (never breaks the turn)', async () => {
+    const reg = new ToolRegistry()
+    const client: ModelClient = {
+      generate: async (req) => {
+        if (isSummaryReq(req)) throw new Error('summary boom')
+        return r({ text: 'resp' })
+      },
+    }
+    const s = createSession({ client, registry: reg, system: 'sys', model: 'm', maxTokens: 100, contextTokens: 1500 })
+    const bigText = 'x'.repeat(4000)
+    const compacts: number[] = []
+    const trims: number[] = []
+    await runTurn(s, bigText)
+    const out = await runTurn(s, bigText + '_LATEST', {
+      onContextCompact: (info) => compacts.push(info.summarizedRounds),
+      onContextTrim: (info) => trims.push(info.droppedMessages),
+    })
+    expect(out).toBe('resp') // 本轮仍正常完成
+    expect(compacts).toEqual([]) // 摘要失败 → 未压缩
+    expect(trims.length).toBeGreaterThanOrEqual(1) // 回退到裁剪
+    expect(s.messages[0].text).toBe(bigText + '_LATEST')
+  })
+
+  it('applies a secondary trim when the folded summary itself keeps the request over budget', async () => {
+    // 摘要本身很大时，折叠进 system 后仍可能超预算；此时应再叠加一次整轮丢弃（major 修复）。
+    const reg = new ToolRegistry()
+    const client: ModelClient = {
+      generate: async (req) => {
+        if (isSummaryReq(req)) return r({ text: 'S'.repeat(12000) }) // ~3000 token 的超大摘要
+        return r({ text: 'resp' })
+      },
+    }
+    const s = createSession({ client, registry: reg, system: 'sys', model: 'm', maxTokens: 100, contextTokens: 2500 })
+    const big = 'x'.repeat(4000) // ~1000 token/轮
+    const compacts: number[] = []
+    const trims: number[] = []
+    await runTurn(s, big) // 轮1
+    await runTurn(s, big + '_2') // 轮2（两轮 ~2000，仍 ≤ 2500，不压缩）
+    await runTurn(s, big + '_3', { // 轮3：三轮超 2500 → 压缩最旧轮
+      onContextCompact: (info) => compacts.push(info.summarizedRounds),
+      onContextTrim: (info) => trims.push(info.droppedMessages),
+    })
+    expect(compacts).toEqual([1]) // 压缩发生
+    expect(trims.length).toBeGreaterThanOrEqual(1) // 超大摘要 → 触发二次裁剪
+    expect(s.messages[0].text).toBe(big + '_3') // 仅保留最新一轮
+    expect(s.messages.find((m) => m.text === big + '_2')).toBeUndefined()
   })
 })

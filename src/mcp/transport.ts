@@ -1,6 +1,25 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { encodeMessage, LineDecoder } from './protocol.js'
 
+// MCP 子进程不应继承宿主进程的凭据类环境变量。
+// 白名单放行系统基础变量 + 用户显式配置的 env；其余一律不传递。
+const MCP_ENV_ALLOWLIST = new Set([
+  'PATH', 'HOME', 'USER', 'USERPROFILE', 'TMP', 'TMPDIR', 'TEMP',
+  'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE',
+  'NODE_PATH', 'NODE_ENV',
+  'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', // Windows
+  'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', // Linux
+])
+
+function buildChildEnv(userEnv?: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const key of MCP_ENV_ALLOWLIST) {
+    if (process.env[key] !== undefined) env[key] = process.env[key]!
+  }
+  if (userEnv) Object.assign(env, userEnv)
+  return env
+}
+
 // 传输抽象：把"如何收发 JSON-RPC 消息"与客户端逻辑解耦，便于用假传输单测 McpClient。
 export interface Transport {
   start(): Promise<void>
@@ -31,7 +50,7 @@ export class StdioTransport implements Transport {
   async start(): Promise<void> {
     const child = spawn(this.cfg.command, this.cfg.args ?? [], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...(this.cfg.env ?? {}) },
+      env: buildChildEnv(this.cfg.env),
       cwd: this.cfg.cwd,
       shell: false, // 不经 shell，避免注入；命令/参数按 config 原样传
     })

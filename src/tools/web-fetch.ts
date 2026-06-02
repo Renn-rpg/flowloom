@@ -36,14 +36,34 @@ export function isPrivateHost(hostname: string): boolean {
   }
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
   if (m) {
-    const a = Number(m[1])
-    const b = Number(m[2])
+    // 拒绝前导零的八进制 IP 记法（如 0177.0.0.1 → 部分解析器按八进制处理成 127.0.0.1）
+    const octets = [m[1], m[2], m[3], m[4]]
+    if (octets.some(o => o.startsWith('0') && o.length > 1)) return true
+    const a = Number(octets[0])
+    const b = Number(octets[1])
     if (a === 127 || a === 10 || a === 0) return true
     if (a === 192 && b === 168) return true
     if (a === 172 && b >= 16 && b <= 31) return true
     if (a === 169 && b === 254) return true // 链路本地 / 云元数据
     if (a === 100 && b >= 64 && b <= 127) return true // CGNAT
     return false
+  }
+  // 拒绝纯数字 IP（十进制整数表示，如 http://2130706433/ → 127.0.0.1）
+  if (/^\d+$/.test(h)) {
+    const n = BigInt(h)
+    if (n <= 0xFFFFFFFFn) {
+      const a = Number((n >> 24n) & 0xFFn)
+      const b = Number((n >> 16n) & 0xFFn)
+      if (a === 127 || a === 10 || a === 0) return true
+      if (a === 192 && b === 168) return true
+      if (a === 172 && b >= 16 && b <= 31) return true
+      if (a === 169 && b === 254) return true
+      return true // 保守策略：任何纯数字 IP 都拒绝
+    }
+  }
+  // 拒绝十六进制 IP（如 http://0x7f000001/ → 127.0.0.1）
+  if (/^0x[0-9a-fA-F]{8}$/.test(h)) {
+    return true // 保守策略：任何十六进制 IP 都拒绝
   }
   return false // 普通域名放行
 }

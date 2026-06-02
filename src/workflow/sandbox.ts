@@ -52,15 +52,40 @@ const sandboxBase = Object.freeze({
   eval: undefined,
 })
 
+// 封装宿主函数引用：阻止沙箱代码通过 fn.constructor 拿到宿主 Function 构造器。
+// ⚠️ node:vm 不是安全沙箱——此措施仅提高攻击门槛，不能防止所有逃逸。
+// 完全隔离需使用 isolated-vm。
+function sealHostFn(fn: (...args: any[]) => any): (...args: any[]) => any {
+  const proxy = new Proxy(fn, {
+    get(target, prop) {
+      if (prop === 'constructor') {
+        throw new Error('Function constructor is not available in the sandbox')
+      }
+      return undefined // 不暴露宿主侧的任意属性，阻断进一步探测
+    },
+  }) as (...args: any[]) => any
+  return proxy
+}
+
+// 递归封装对象中所有函数值，阻断宿主函数引用进入沙箱。
+function sealApi(api: Record<string, unknown>): Record<string, unknown> {
+  const sealed: Record<string, unknown> = {}
+  for (const key of Object.keys(api)) {
+    const val = api[key]
+    sealed[key] = typeof val === 'function' ? sealHostFn(val as (...args: any[]) => any) : val
+  }
+  return sealed
+}
+
 export class NodeVmRuntime implements Runtime {
   constructor(private syncTimeoutMs = 30_000) {}
 
   createContext(api: Record<string, unknown>): RuntimeContext {
     const sandboxObj = { ...sandboxBase }
-    // 把 API 属性复制到 sandbox，每个值都做 hostFn wrapping
-    // （可信代码模型下接受 constructor 逃逸风险，参见 CLAUDE.md 设计决策）
-    for (const key of Object.keys(api)) {
-      ;(sandboxObj as any)[key] = api[key]
+    // 所有宿主函数引用先经 sealApi 封装，阻断 constructor 逃逸路径。
+    const sealed = sealApi(api)
+    for (const key of Object.keys(sealed)) {
+      ;(sandboxObj as any)[key] = sealed[key]
     }
     const sandboxCtx = vm.createContext(sandboxObj, {
       codeGeneration: { strings: false, wasm: false },
@@ -69,14 +94,19 @@ export class NodeVmRuntime implements Runtime {
     return {
       // 注入宿主函数引用到 sandbox 并调用。宿主函数的 globalThis 仍是宿主上下文，
       // 适用于需要访问复杂宿主对象（如 WorkflowCtx）的场景。workflow-runtime 走此路径。
+      // ⚠️ 安全警告：注入宿主函数到沙箱存在 constructor 逃逸风险。
+      // sealHostFn 提高了攻击门槛，但 node:vm 不是安全沙箱。完全隔离需使用 isolated-vm。
       async run(
         fn: (...args: any[]) => any,
         ...args: any[]
       ): Promise<unknown> {
         const fnKey = `__injected_fn_${runCounter++}`
         const argKeys = args.map((_, i) => `__injected_arg_${runCounter}_${i}`)
-        ;(sandboxCtx as any)[fnKey] = fn
-        argKeys.forEach((k, i) => { (sandboxCtx as any)[k] = args[i] })
+        ;(sandboxCtx as any)[fnKey] = sealHostFn(fn)
+        argKeys.forEach((k, i) => {
+          const v = args[i]
+          ;(sandboxCtx as any)[k] = typeof v === 'function' ? sealHostFn(v as (...args: any[]) => any) : v
+        })
         try {
           const code = `${fnKey}.apply(null, [${argKeys.join(',')}])`
           const result = vm.runInContext(code, sandboxCtx, { timeout: timeoutMs })

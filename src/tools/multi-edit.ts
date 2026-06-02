@@ -1,4 +1,5 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, rename } from 'node:fs/promises'
+import { join, dirname } from 'node:path'
 import type { Tool } from './types.js'
 import { type PathPolicy, allowAllPaths } from './permissions.js'
 
@@ -48,7 +49,10 @@ export function makeMultiEditTool(paths: PathPolicy = allowAllPaths): Tool {
         // split/join 字面替换：避免 String.replace 把 new_string 里的 $&/$1/$` 当成特殊替换模式
         content = content.split(oldS).join(newS)
       }
-      await writeFile(path, content, 'utf8')
+      // 原子写入：先写临时文件再 rename，避免 TOCTOU 竞态与中途崩溃文件损坏
+      const tmpPath = join(dirname(path), `.floom-medit-${Math.random().toString(36).slice(2)}.tmp`)
+      await writeFile(tmpPath, content, 'utf8')
+      await rename(tmpPath, path)
       return `edited ${path} (${edits.length} edits)`
     },
   }

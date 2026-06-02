@@ -24,11 +24,11 @@ export function confineToRoot(root: string): PathPolicy {
     check(p: string): string {
       const abs = isAbsolute(p) ? resolve(p) : resolve(absRoot, p)
       const rel = relative(absRoot, abs)
+      // 归一化逃逸检测：relative 返回 .. 或以 ..\ 开头 = 逃逸；返回绝对路径 = 跨盘符（Windows）
       const escapes = rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)
-      if (escapes || (process.platform === 'win32' && abs.toLowerCase() === absRoot.toLowerCase() && !abs.startsWith(absRoot))) {
-        // Windows 额外检查：relative 在跨盘符大小写不同时可能漏过
-      }
-      if (escapes) {
+      // Windows 额外：盘符大小写不敏感——若 lowercased 路径相同但 startsWith 失败说明大小写欺骗
+      const win32Spoof = process.platform === 'win32' && abs.toLowerCase() === absRoot.toLowerCase() && !abs.startsWith(absRoot)
+      if (escapes || win32Spoof) {
         throw new Error(
           `Path "${p}" is outside the project root (${absRoot}); ` +
             `only files within the project are allowed (re-run with --yolo to bypass).`,

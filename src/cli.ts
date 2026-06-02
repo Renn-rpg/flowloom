@@ -39,25 +39,26 @@ import { loadHooks, evaluatePreToolUse, evaluatePostToolUse, expandHookCommand }
 import { loadMcpConfig } from './mcp/config.js'
 import { connectMcpServers } from './mcp/manager.js'
 import { createSession, runTurn, type ToolGate } from './agent/loop.js'
+import { compactMessages } from './agent/compaction.js'
 import { makeDispatchAgentTool } from './agent/subagent.js'
 import { makeExitPlanModeTool, planModeGate } from './agent/plan.js'
 import type { Tool } from './tools/types.js'
 import { SessionStore } from './agent/session-store.js'
 import { executeWorkflow } from './workflow/workflow-runtime.js'
 import { NodeVmRuntime } from './workflow/sandbox.js'
-import { createSpinner, toolStart, stopActiveSpinner, startBlinking, finishBlinking, stopBlinking } from './cli/spinner.js'
+import { createSpinner, stopActiveSpinner, stopBlinking } from './cli/spinner.js'
 import { fmt } from './cli/format.js'
 import { showWelcome } from './cli/welcome.js'
 import { renderDiff } from './cli/diff.js'
 import { BlockManager } from './cli/blocks.js'
 import { MemoryStore } from './memory/store.js'
-import { recallMemories, formatRecall } from './memory/recall.js'
+import { formatRecall } from './memory/recall.js'
 import { makeRememberTool } from './memory/tool.js'
 import { skillRegistry } from './skills/registry.js'
 import { codeReviewSkill } from './skills/builtin/code-review.js'
 import { simplifySkill } from './skills/builtin/simplify.js'
 import { architectSkill } from './skills/builtin/architect.js'
-import { loadSettings, describeSettings, type FloomSettings } from './config/settings.js'
+import { loadSettings, describeSettings } from './config/settings.js'
 import { makeGitDiffTool, makeGitLogTool, makeGitBranchTool, makeGitCommitTool } from './tools/git.js'
 import { CronStore } from './cron/store.js'
 import { CronScheduler } from './cron/scheduler.js'
@@ -345,6 +346,13 @@ async function runTurnWithUI(
         process.stderr.write(
           fmt.yellow(
             `  ⚠ context trimmed: dropped ${info.droppedMessages} msg / ${info.droppedRounds} round(s), ~${info.estimatedTokens} tok kept${warn}\n`,
+          ),
+        )
+      },
+      onContextCompact: (info) => {
+        process.stderr.write(
+          fmt.dim(
+            `  🗜 context compacted: summarized ${info.summarizedRounds} round(s) → ~${info.estimatedTokens} tok kept\n`,
           ),
         )
       },
@@ -932,6 +940,39 @@ program
                 }
               } else {
                 process.stderr.write(fmt.yellow(`  ⚠ unknown skill: /${slash.skill}\n`))
+              }
+              continue
+            }
+            if (slash.compact) {
+              // 手动 /compact：摘要除最新一轮外的全部历史，折叠进 system。需模型调用，故在此异步执行。
+              if (session.messages.length === 0) {
+                process.stderr.write(fmt.dim('  nothing to compact (no history yet)\n'))
+                continue
+              }
+              process.stderr.write(fmt.dim('  🗜 compacting conversation…\n'))
+              try {
+                const c = await compactMessages({
+                  client: session.client,
+                  system: session.system,
+                  messages: session.messages,
+                  tools: session.registry.specs(),
+                  model: session.model,
+                  budget: 0,
+                  maxTokens: session.maxTokens,
+                  keepLastRounds: 1,
+                })
+                if (c) {
+                  session.system = c.system
+                  session.messages = c.messages
+                  process.stderr.write(
+                    fmt.dim(`  🗜 compacted ${c.summarizedRounds} round(s) into a summary · ~${c.estimatedTokens} tok kept\n`),
+                  )
+                  persist()
+                } else {
+                  process.stderr.write(fmt.dim('  nothing to compact (need at least 2 exchanges)\n'))
+                }
+              } catch (e) {
+                process.stderr.write(fmt.red(`  ✗ compact failed: ${formatApiError(e)}\n`))
               }
               continue
             }

@@ -13,7 +13,10 @@ export class Semaphore {
   async acquire(): Promise<() => void> {
     if (this.running < this.max) {
       this.running++
+      let released = false
       return () => {
+        if (released) return
+        released = true
         this.running--
         this.dequeue()
       }
@@ -21,7 +24,10 @@ export class Semaphore {
     return new Promise<() => void>((resolve) => {
       this.queue.push(() => {
         this.running++
+        let released = false
         resolve(() => {
+          if (released) return
+          released = true
           this.running--
           this.dequeue()
         })

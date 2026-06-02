@@ -1,4 +1,5 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, rename } from 'node:fs/promises'
+import { join, dirname } from 'node:path'
 import type { Tool } from './types.js'
 import { type PathPolicy, allowAllPaths } from './permissions.js'
 
@@ -16,7 +17,11 @@ export function makeEditTool(paths: PathPolicy = allowAllPaths): Tool {
       if (count === 0) return `ERROR: old_string not found in ${path}`
       if (count > 1) return `ERROR: old_string is not unique in ${path} (${count} matches)`
       // split/join 做字面替换：避免 String.replace 把 new_string 里的 $&/$1/$` 当成特殊替换模式
-      await writeFile(path, content.split(oldS).join(newS), 'utf8')
+      const updated = content.split(oldS).join(newS)
+      // 原子写入：先写临时文件再 rename，避免 TOCTOU 竞态与中途崩溃文件损坏
+      const tmpPath = join(dirname(path), `.floom-edit-${Math.random().toString(36).slice(2)}.tmp`)
+      await writeFile(tmpPath, updated, 'utf8')
+      await rename(tmpPath, path)
       return `edited ${path}`
     },
   }

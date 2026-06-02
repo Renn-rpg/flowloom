@@ -69,13 +69,9 @@ export class ModelRouter implements ModelClient {
       try {
         const result = await client.generate(req, opts)
         if (i === 0) this.breaker.recordSuccess()
-        // 如果不是主模型（已 fallback），记录一下
-        if (i > 0) {
-          // 将 fallback 信息注入 text 前缀（轻量提示）
-        }
         return result
-      } catch (e: any) {
-        const msg = `${name}: ${e.message ?? String(e)}`
+      } catch (e: unknown) {
+        const msg = `${name}: ${e instanceof Error ? e.message : String(e)}`
         errors.push(msg)
         if (i === 0) this.breaker.recordFailure()
         // 继续尝试下一个 fallback

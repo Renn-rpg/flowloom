@@ -26,6 +26,7 @@ export interface SlashResult {
   exit?: boolean // /exit /quit
   mutated?: boolean // 改了持久化状态（model/effort/clear），cli 据此落盘
   skill?: string // 技能名（如 'code-review'），cli 据此 dispatch 子 agent
+  compact?: boolean // 请求语义压缩历史（需模型调用，由 cli 在 runSlash 返回后异步执行）
 }
 
 interface SlashSpec {
@@ -40,6 +41,7 @@ export const SLASH_COMMANDS: Record<string, SlashSpec> = {
   effort: { usage: '/effort [level]', desc: 'show or set reasoning effort (high/max → thinking model)' },
   plan: { usage: '/plan', desc: 'toggle plan mode (read-only; propose a plan before changes)' },
   clear: { usage: '/clear', desc: 'clear conversation history (reset context)' },
+  compact: { usage: '/compact', desc: 'summarize older history into a synopsis to free up context' },
   usage: { usage: '/usage', desc: 'show token usage this session' },
   save: { usage: '/save', desc: 'save the session now' },
   sessions: { usage: '/sessions', desc: 'list saved sessions in this project' },
@@ -129,6 +131,9 @@ export function runSlash(line: string, ctx: SlashContext): SlashResult {
       const n = ctx.clearHistory()
       return { handled: true, output: `cleared ${n} message(s); context reset`, mutated: true }
     }
+    case 'compact':
+      // 摘要需模型调用（异步）；runSlash 保持纯同步，仅发出信号，由 cli 执行实际压缩。
+      return { handled: true, compact: true }
     case 'usage': {
       const u = ctx.getUsage()
       return {

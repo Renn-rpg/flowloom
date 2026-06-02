@@ -268,7 +268,7 @@ Agent options:
   -r, --resume [id]      Resume a saved session (most recent if no id)
   --list-sessions        List saved sessions and exit
 
-# Slash commands (in the REPL): /help /model /effort /plan /clear /usage /save /sessions /exit
+# Slash commands (in the REPL): /help /model /effort /plan /clear /compact /usage /save /sessions /exit
 
 # Workflow execution
 floom run script.mjs [options]
@@ -339,7 +339,8 @@ npm run probe      # Tool-calling reliability probe (needs API key)
 | Phase 7 | ✅ | [Sub-agents](docs/subagents.md): `dispatch_agent` tool — main agent delegates isolated subtasks (own context, shared tools/permissions, depth-capped) |
 | Phase 8 | ✅ | [Plan Mode](docs/plan-mode.md): read-only research → `exit_plan_mode` proposes a plan → approve to unlock edits (`/plan` or `--plan`) |
 | Phase 9 | ✅ | [Background tasks](docs/background-tasks.md): `run_shell background:true` + `bash_output` / `kill_shell` for servers/watchers/builds |
-| Next | 📋 | git/worktree tools, semantic compaction, PostToolUse hooks |
+| Phase 10 | ✅ | [Context compaction](docs/compaction.md): over-budget history is summarized into a synopsis (auto, silent, falls back to trim) instead of dropped; manual `/compact` |
+| Next | 📋 | git/worktree tools, PostToolUse hook execution |
 
 ---
 

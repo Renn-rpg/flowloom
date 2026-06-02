@@ -3,7 +3,6 @@
 
 import type { Tool } from '../tools/types.js'
 import type { MemoryStore, MemoryType } from '../memory/store.js'
-import { formatMemory } from '../memory/store.js'
 
 export function makeRememberTool(store: MemoryStore): Tool {
   return {

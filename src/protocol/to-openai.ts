@@ -22,7 +22,7 @@ function mapMessage(m: InternalMessage): OpenAIMessage {
     // 避免双重 ERROR: 前缀：若内容已以 ERROR: 开头（registry.run 已编码），
     // 则不再重复添加。
     const r = m.toolResults[0]
-    const content = r.isError && !r.content.startsWith('ERROR:')
+    const content = r.isError && !(r.content ?? '').startsWith('ERROR:')
       ? `ERROR: ${r.content}`
       : r.content
     return { role: 'tool', tool_call_id: r.toolCallId, content }
@@ -31,7 +31,7 @@ function mapMessage(m: InternalMessage): OpenAIMessage {
     const msg: OpenAIMessage = {
       role: 'assistant',
       content: m.text ?? '',
-      tool_calls: m.toolCalls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.input) } })),
+      tool_calls: m.toolCalls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.input ?? {}) } })),
     }
     // R8：thinking 模型的工具轮必须回传 reasoning_content，否则后续请求 400。
     // 普通模型（无 reasoningText）不附带该字段，保持原行为。
