@@ -14,8 +14,9 @@ export interface PreToolHook {
 }
 
 export interface PostToolHook {
-  matcher?: string
-  // 命令型 PostToolUse 钩子留待后续；当前仅保留类型占位
+  matcher?: string // 工具名正则；缺省匹配任意工具
+  command?: string // 要执行的 shell 命令（如 "git add \"${path}\""）
+  note?: string // 执行说明（仅 UI 展示）
 }
 
 export interface HooksConfig {
@@ -74,6 +75,34 @@ export function evaluatePreToolUse(
     return { decision: 'allow', messages: [] }
   }
   return { decision: 'none', messages: [] }
+}
+
+// PostToolUse：工具执行成功后触发。仅执行 shell 命令（如 git add、fmt）。
+// 不返回值，不阻塞工具结果回传——fire-and-forget。
+export function evaluatePostToolUse(
+  hooks: PostToolHook[] | undefined,
+  toolName: string,
+  input: Record<string, unknown>,
+): Array<{ command: string; note?: string }> {
+  const applicable = (hooks ?? []).filter(h => {
+    if (h.matcher) {
+      try {
+        if (!new RegExp(h.matcher).test(toolName)) return false
+      } catch {
+        return false
+      }
+    }
+    return true
+  })
+  return applicable.map(h => ({
+    command: h.command ?? '',
+    note: h.note,
+  })).filter(h => h.command)
+}
+
+// 替换命令中的模板变量：${path} → input.path, ${command} → input.command 等
+export function expandHookCommand(template: string, input: Record<string, unknown>): string {
+  return template.replace(/\$\{(\w+)\}/g, (_, key) => String(input[key] ?? ''))
 }
 
 // 从 <dir>/.floom/hooks.json 读配置；无文件/坏 JSON/非法形状 → 空配置（不抛、不影响运行）。

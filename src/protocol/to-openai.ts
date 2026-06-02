@@ -18,9 +18,14 @@ export interface OpenAIRequest {
 
 function mapMessage(m: InternalMessage): OpenAIMessage {
   if (m.role === 'tool' && m.toolResults?.length) {
-    // 错误信息编码进 content 前缀（OpenAI 无 is_error 字段，规划 §4.1d）
+    // 错误信息编码进 content 前缀（OpenAI 无 is_error 字段，规划 §4.1d）。
+    // 避免双重 ERROR: 前缀：若内容已以 ERROR: 开头（registry.run 已编码），
+    // 则不再重复添加。
     const r = m.toolResults[0]
-    return { role: 'tool', tool_call_id: r.toolCallId, content: r.isError ? `ERROR: ${r.content}` : r.content }
+    const content = r.isError && !r.content.startsWith('ERROR:')
+      ? `ERROR: ${r.content}`
+      : r.content
+    return { role: 'tool', tool_call_id: r.toolCallId, content }
   }
   if (m.role === 'assistant' && m.toolCalls?.length) {
     const msg: OpenAIMessage = {

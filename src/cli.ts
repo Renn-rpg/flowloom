@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 import { config } from 'dotenv'
-config({ quiet: true })
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
+// 加载 .env：全局 (~/.floom/.env) 优先，项目级 ($CWD/.env) 覆盖
+config({ path: join(homedir(), '.floom', '.env'), quiet: true })
+config({ quiet: true }) // $CWD/.env 覆盖全局
+
 import { Command } from 'commander'
 import { resolve, dirname } from 'node:path'
 import { mkdirSync, readFileSync } from 'node:fs'
@@ -29,7 +35,7 @@ import { selectMenu } from './cli/prompt.js'
 import { ReplReader } from './cli/repl-input.js'
 import { resolveEffortModel } from './cli/effort.js'
 import { runSlash, type SlashContext } from './cli/commands.js'
-import { loadHooks, evaluatePreToolUse } from './hooks/engine.js'
+import { loadHooks, evaluatePreToolUse, evaluatePostToolUse, expandHookCommand } from './hooks/engine.js'
 import { loadMcpConfig } from './mcp/config.js'
 import { connectMcpServers } from './mcp/manager.js'
 import { createSession, runTurn, type ToolGate } from './agent/loop.js'
@@ -39,12 +45,34 @@ import type { Tool } from './tools/types.js'
 import { SessionStore } from './agent/session-store.js'
 import { executeWorkflow } from './workflow/workflow-runtime.js'
 import { NodeVmRuntime } from './workflow/sandbox.js'
-import { createSpinner, toolStart, stopActiveSpinner } from './cli/spinner.js'
+import { createSpinner, toolStart, stopActiveSpinner, startBlinking, finishBlinking, stopBlinking } from './cli/spinner.js'
 import { fmt } from './cli/format.js'
 import { showWelcome } from './cli/welcome.js'
 import { renderDiff } from './cli/diff.js'
+import { BlockManager } from './cli/blocks.js'
+import { MemoryStore } from './memory/store.js'
+import { recallMemories, formatRecall } from './memory/recall.js'
+import { makeRememberTool } from './memory/tool.js'
+import { skillRegistry } from './skills/registry.js'
+import { codeReviewSkill } from './skills/builtin/code-review.js'
+import { simplifySkill } from './skills/builtin/simplify.js'
+import { architectSkill } from './skills/builtin/architect.js'
+import { loadSettings, describeSettings, type FloomSettings } from './config/settings.js'
+import { makeGitDiffTool, makeGitLogTool, makeGitBranchTool, makeGitCommitTool } from './tools/git.js'
+import { CronStore } from './cron/store.js'
+import { CronScheduler } from './cron/scheduler.js'
+import { makeCronCreateTool, makeCronListTool, makeCronDeleteTool } from './cron/tool.js'
+import { makeWebSearchTool } from './tools/web-search.js'
+import { ModelRouter } from './model/router.js'
+import type { ModelClient } from './model/client.js'
+import { formatApiError } from './model/retry.js'
 
-const VERSION = '0.8.0'
+// 注册内置技能
+skillRegistry.register(codeReviewSkill)
+skillRegistry.register(simplifySkill)
+skillRegistry.register(architectSkill)
+
+const VERSION = '0.9.0'
 
 // system prompt 按当前 model id 动态生成，好让模型在被问到时如实说出自己是哪个底层模型。
 // FlowLoom 只是外壳/CLI，底层是 DeepSeek 的某个模型——不强加虚假身份、不阻止它回答“你是什么模型”。
@@ -66,7 +94,8 @@ function makeSubAgentSystem(model: string): string {
   return (
     `You are a sub-agent dispatched by FlowLoom (running on the DeepSeek "${model}" model) to autonomously complete one focused, self-contained task. ` +
     `You have file, search, and shell tools (read_file, write_file, edit_file, multi_edit, run_shell, glob, grep, web_fetch). You CANNOT dispatch further sub-agents. ` +
-    `Whoever dispatched you sees ONLY your final message — not your intermediate steps, tool calls, or tool output. So your final message must be a COMPLETE, self-contained report: include concrete results (file paths, key findings, exactly what you changed). ` +
+    `Whoever dispatched you sees ONLY your final message — not your intermediate steps, tool calls, or tool output. Your final message must be CONCISE and COMPLETE: include concrete results (file paths, key findings, exactly what you changed). ` +
+    `Keep your final response under 40,000 characters — overly long output will be truncated without notice. ` +
     `Work autonomously with the tools, then summarize. Do NOT ask the dispatcher questions — you cannot interact with them.`
   )
 }
@@ -92,6 +121,7 @@ function makeRegistry(policy: ToolPolicy, shells?: BackgroundShells) {
     makeGlobTool(policy.readPaths),
     makeGrepTool(policy.readPaths),
     makeWebFetchTool({ allowPrivate: policy.allowPrivateNet }),
+    makeWebSearchTool(),
   ]
   if (shells) tools.push(makeBashOutputTool(shells), makeKillShellTool(shells))
   tools.forEach((t) => registry.register(t))
@@ -111,8 +141,20 @@ const REASONER_MODEL = process.env.FLOOM_REASONER_MODEL ?? ''
 const MAX_TOKENS = Number(process.env.FLOOM_MAX_TOKENS) || 8192
 
 function makeSession(model: string, policy: ToolPolicy, shells?: BackgroundShells) {
+  const primary = new DeepSeekClient({ model })
+  // 如果配置了 fallback 模型，创建多模型路由器（含熔断器）
+  const fallbackModel = process.env.FLOOM_FALLBACK_MODEL
+  const fallbackKey = process.env.FLOOM_FALLBACK_API_KEY
+  const fallbackUrl = process.env.FLOOM_FALLBACK_BASE_URL
+  const client: ModelClient = fallbackModel && fallbackKey
+    ? new ModelRouter([
+        { client: primary, name: `deepseek:${model}` },
+        { client: new DeepSeekClient({ model: fallbackModel, apiKey: fallbackKey, baseURL: fallbackUrl }), name: `fallback:${fallbackModel}` },
+      ])
+    : primary
+
   return createSession({
-    client: new DeepSeekClient({ model }),
+    client,
     registry: makeRegistry(policy, shells),
     system: makeSystem(model),
     model,
@@ -185,9 +227,11 @@ export interface UiState {
   lastReasoning: string
   // 上一轮 turn 的摘要（工具数 / token 数 / 耗时），ctrl+o 展开时一并显示。
   lastTurnSummary: string
-  // 是否有 REPL 提示符（ReplReader）可接收 ctrl+o。一次性模式为 false，折叠提示不加
-  // "ctrl+o to expand"（因为进程马上就退出了）。
   hasRepl: boolean
+  // 可折叠区块管理器：每个 turn 新建，turn 结束保留供 Ctrl+O/E 展开
+  blockManager: BlockManager
+  // PostToolUse hooks 规则（从 hooks.json 加载，在 onToolResult 中触发）
+  postToolHooks: import('./hooks/engine.js').PostToolHook[]
 }
 
 // 单次 turn 的 UI 渲染：流式文本 + 思考计时 + 工具链动画 + 改动 diff
@@ -198,6 +242,8 @@ async function runTurnWithUI(
   ui: UiState,
 ) {
   const startTime = Date.now()
+  // 模型输出期间隐藏光标，仅 REPL 输入时可见
+  process.stderr.write('\x1b[?25l')
   let totalTools = 0
   // 本轮全部思考链（跨多轮 generate 累计）；turn 结束写入 ui.lastReasoning 供 ctrl+o 展开。
   let reasoningBuf = ''
@@ -269,8 +315,10 @@ async function runTurnWithUI(
             reportThinking() // 无思考流的普通模型：补一行 "Thinking... (X.Xs)"
           }
           streaming = true
+          write('  ') // 模型输出首行缩进 2 格
         }
-        write(delta)
+        // 换行后保持缩进
+        write(delta.replace(/\n/g, '\n  '))
       },
       onThinking: () => {
         streaming = false
@@ -296,49 +344,58 @@ async function runTurnWithUI(
         )
       },
       onToolCall: (name, input) => {
-        if (streaming) {
-          write('\n') // 流式文本收尾换行
-          streaming = false
-        }
-        const detail = input.path ? String(input.path) : undefined
-        // 捕获改动前内容（best-effort；新建文件读不到 → 视为空）
+        if (streaming) { write('\n'); streaming = false }
+        // 截取简短参数用于紧凑显示
+        const args = input.path ? String(input.path).slice(-40)
+          : input.command ? String(input.command).slice(0, 50)
+          : input.pattern ? String(input.pattern).slice(0, 50)
+          : ''
+        // 捕获改动前内容用于 diff
         pendingDiff = null
         if (DIFF_TOOLS.has(name) && input.path) {
-          let before = ''
-          try {
-            before = readFileSync(resolve(process.cwd(), String(input.path)), 'utf8')
-          } catch {
-            before = ''
-          }
-          pendingDiff = { path: String(input.path), before }
+          try { pendingDiff = { path: String(input.path), before: readFileSync(resolve(process.cwd(), String(input.path)), 'utf8') } } catch { pendingDiff = { path: String(input.path), before: '' } }
         }
-        toolSpinner = toolStart(name, detail)
+        // 紧凑格式：状态圈 + 工具名 + 参数
+        const blockId = `t${totalTools}`
+        ui.blockManager.addBlock('tool-call', fmt.toolCompactRunning(name, args))
+        process.stderr.write(`\r\x1b[0K${fmt.toolCompactRunning(name, args)}\n`)
       },
       onToolResult: (name, ms, isError) => {
-        toolSpinner?.stop()
-        toolSpinner = null
         totalTools++
-        if (isError) {
-          process.stderr.write(fmt.toolError(name, ms) + '\n')
-        } else {
-          process.stderr.write(fmt.toolDone(name, ms) + '\n')
-          // 渲染改动 diff
-          if (pendingDiff) {
-            try {
-              const after = readFileSync(resolve(process.cwd(), pendingDiff.path), 'utf8')
-              const d = renderDiff(pendingDiff.before, after, pendingDiff.path)
-              if (d) process.stderr.write(d + '\n')
-            } catch {
-              /* 读不到就跳过 diff */
+        const args = pendingDiff?.path ? String(pendingDiff.path).slice(-40) : ''
+        const line = isError
+          ? fmt.toolCompactError(name, args, ms)
+          : fmt.toolCompactDone(name, args, ms)
+        // ANSI 上移一行覆盖运行态，写最终结果
+        process.stderr.write(`\x1b[1A\r\x1b[0K${line}\n`)
+        // diff 折叠
+        if (!isError && pendingDiff) {
+          try {
+            const after = readFileSync(resolve(process.cwd(), pendingDiff.path), 'utf8')
+            const d = renderDiff(pendingDiff.before, after, pendingDiff.path)
+            if (d) {
+              const lines = d.split('\n')
+              const block = ui.blockManager.addBlock('tool-output', `  ● ${pendingDiff.path}`, lines)
+              ui.blockManager.setPreview(block.id, lines.slice(0, 3))
+              ui.blockManager.finalizeBlock(block.id)
             }
-          }
+          } catch { /* skip diff */ }
+        }
+        // PostToolUse hooks
+        const postActions = evaluatePostToolUse(ui.postToolHooks, name, pendingDiff ? { path: pendingDiff.path } : {})
+        for (const act of postActions) {
+          try {
+            const cmd = expandHookCommand(act.command, pendingDiff ? { path: pendingDiff.path } : {})
+            process.stderr.write(fmt.dim(`  ⚙ post-hook: ${act.note ?? cmd}\n`))
+          } catch { /* skip */ }
         }
         pendingDiff = null
       },
     })
   } finally {
     stopThinking() // 异常路径也要清掉定时器，避免事件循环挂住
-    ui.lastReasoning = reasoningBuf // 缓存本轮思考链，供提示符处 ctrl+o 展开
+    stopBlinking() // 清理闪烁定时器
+    ui.lastReasoning = reasoningBuf // 缓存本轮思考链
   }
 
   if (streaming) write('\n') // 末轮流式文本收尾换行
@@ -348,6 +405,7 @@ async function runTurnWithUI(
   const summary = fmt.summary(outTokens, totalTools, elapsed)
   ui.lastTurnSummary = summary
   process.stderr.write(summary + '\n')
+  if (ui.hasRepl) process.stderr.write('\x1b[?25h') // 恢复光标给 REPL
 }
 
 const program = new Command()
@@ -383,6 +441,7 @@ program
     '-r, --resume [id]',
     'resume a previous session (most recent if no id) in interactive mode',
   )
+  .option('-C, --cwd <dir>', 'project directory (default: current working directory)')
   .option('--list-sessions', 'list saved sessions for this project and exit')
   .action(
     async (
@@ -395,8 +454,20 @@ program
         plan?: boolean
         resume?: string | boolean
         listSessions?: boolean
+        cwd?: string
       },
     ) => {
+      // 切换到指定项目目录（-C / --cwd），后续所有 process.cwd() 引用自动指向该目录
+      if (opts.cwd) {
+        try {
+          process.chdir(resolve(opts.cwd))
+        } catch (e) {
+          process.stderr.write(fmt.red(`ERROR: cannot access directory "${opts.cwd}": ${(e as Error).message}\n`))
+          process.exitCode = 1
+          return
+        }
+      }
+
       const store = sessionStore()
       if (opts.listSessions) {
         printSessions(store)
@@ -405,6 +476,7 @@ program
 
       const resuming = opts.resume !== undefined
       const yolo = Boolean(opts.yolo)
+      const settings = loadSettings(process.cwd())
       // --effort high/max → 切到 FLOOM_REASONER_MODEL 指定的 thinking+工具模型（未配置则告警回退）
       const effort = resolveEffortModel(opts.model, opts.effort, REASONER_MODEL)
       const effectiveModel = effort.model
@@ -424,39 +496,47 @@ program
       // 后台 shell 管理器（run_shell background:true / bash_output / kill_shell）。会话级单例，
       // 父 + 子 agent 共享；退出时 killAll 清理仍在跑的进程。
       const shells = new BackgroundShells()
-      // 详情显隐：默认折叠思考链；--verbose 启动即全开。ctrl+o 在提示符处切换 verbose，
-      // 并把上一轮被折叠的思考链就地展开。
+      // PreToolUse hooks（.floom/hooks.json）：在工具执行前 allow/deny/ask 的策略闸。
+      const hooks = loadHooks(process.cwd())
+
+      // 详情显隐：默认折叠，ctrl+o 逐个展开折叠块，ctrl+e 展开全部。
       const ui: UiState = {
         verbose: Boolean(opts.verbose),
         lastReasoning: '',
         lastTurnSummary: '',
         hasRepl: interactive,
+        blockManager: new BlockManager(),
+        postToolHooks: hooks.PostToolUse ?? [],
       }
-      const onToggleVerbose = () => {
-        ui.verbose = !ui.verbose
-        process.stderr.write(
-          fmt.dim(
-            ui.verbose
-              ? '  ✻ verbose on — thinking will stream live'
-              : '  ✻ verbose off — thinking collapsed',
-          ) + '\n',
-        )
-        if (ui.verbose) {
-          // 先展示上一轮摘要，再展开被折叠的思考链
-          if (ui.lastTurnSummary) {
-            process.stderr.write(fmt.dim('  ✻ last turn: ' + ui.lastTurnSummary) + '\n')
+
+      const onExpand = (mode: 'one' | 'all') => {
+        process.stderr.write('\x1b[?25l')
+        if (mode === 'one') {
+          const id = ui.blockManager.expandOne()
+          if (id) {
+            const block = ui.blockManager.all.find(b => b.id === id)
+            if (block && block.contentLines.length > 0) {
+              process.stderr.write('\n' + fmt.dim(`  ── expanded: ${block.summaryLine.trim()} ──`) + '\n')
+              for (const line of block.contentLines) {
+                process.stderr.write(line + '\n')
+              }
+            }
           }
-          if (ui.lastReasoning) {
-            process.stderr.write(fmt.dim('  ✻ last thinking:') + '\n')
-            const body = ui.lastReasoning
-              .split('\n')
-              .map((l) => '    ' + l)
-              .join('\n')
-            process.stderr.write(fmt.dim(body) + '\n')
-          } else {
-            process.stderr.write(fmt.dim('  (no thinking was produced last turn)') + '\n')
+        } else {
+          const ids = ui.blockManager.expandAll()
+          if (ids.length > 0) {
+            process.stderr.write('\n' + fmt.dim('  ── expanded all ──') + '\n')
+            for (const id of ids) {
+              const block = ui.blockManager.all.find(b => b.id === id)
+              if (block && block.contentLines.length > 0) {
+                for (const line of block.contentLines) {
+                  process.stderr.write(line + '\n')
+                }
+              }
+            }
           }
         }
+        process.stderr.write('\x1b[?25h')
       }
 
       // 交互模式用自建行编辑器（/ 下拉补全 + ctrl+o + raw-mode 行编辑）；非 TTY 自动降级为
@@ -464,16 +544,15 @@ program
       const reader = interactive
         ? new ReplReader({
             out: process.stderr,
-            promptText: () => (planState.active ? 'floom(plan)> ' : 'floom> '),
-            colorPrompt: fmt.green,
-            onToggleVerbose,
+            promptText: () => (planState.active ? '❯(plan) ' : '❯ '),
+            colorPrompt: (s: string) => fmt.white(s),
+            onExpand,
           })
         : null
 
-      // 默认：文件工具限定在当前工作目录内；read/edit 额外拦截敏感文件；
-      // shell 用方向键菜单逐条确认（无 TTY 则拒绝）。--yolo 放开全部围栏。
+      // 默认：文件工具限定在当前工作目录内；敏感文件防护始终生效（--yolo 不绕过）。
       const confined: PathPolicy = yolo ? allowAllPaths : confineToRoot(process.cwd())
-      const readPaths: PathPolicy = yolo ? allowAllPaths : denySecrets(confined)
+      const readPaths: PathPolicy = denySecrets(confined) // denySecrets 始终生效
       const writePaths: PathPolicy = confined
       const shell: ShellPolicy = yolo
         ? allowAllShell
@@ -484,14 +563,47 @@ program
       const session = makeSession(effectiveModel, { readPaths, writePaths, shell, allowPrivateNet: yolo }, shells)
 
       // 计划模式开关会改变 system（注入"只读调研、先出计划"须知）；切模型/档位时也要据当前 plan 状态重算。
-      const refreshSystem = () => {
+      let refreshSystem = () => {
         session.system = makeSystem(session.model, planState.active)
       }
       refreshSystem() // 应用 --plan 启动态（若开）
 
-      // PreToolUse hooks（.floom/hooks.json）：在工具执行前 allow/deny/ask 的策略闸。
-      // 无文件 = 无规则 = 零行为变化。--yolo 不绕过 hooks（用户显式声明的策略应一直生效）。
-      const hooks = loadHooks(process.cwd())
+      // —— 记忆系统 ——
+      const memoryStore = new MemoryStore(process.cwd())
+      const allMemories = memoryStore.loadAll()
+      if (allMemories.length > 0) {
+        // 将记忆注入 system prompt
+        const recall = formatRecall(allMemories)
+        session.system += recall
+        process.stderr.write(
+          fmt.dim(`  🧠 loaded ${allMemories.length} memor${allMemories.length === 1 ? 'y' : 'ies'}\n`),
+        )
+      }
+      // 注册 remember 工具，让 agent 主动管理记忆
+      session.registry.register(makeRememberTool(memoryStore))
+      // Git 工具
+      session.registry.register(makeGitDiffTool())
+      session.registry.register(makeGitLogTool())
+      session.registry.register(makeGitBranchTool())
+      session.registry.register(makeGitCommitTool(shell))
+      // Cron 定时任务
+      const cronStore = new CronStore(resolve(process.cwd(), '.floom', 'cron.db'))
+      const cronScheduler = new CronScheduler(cronStore, (entry) => {
+        // 定时触发：把任务作为普通 prompt 注入 REPL 或记录到 stderr
+        process.stderr.write(fmt.dim(`\n  ⏰ cron: ${entry.id} → "${entry.prompt.slice(0, 60)}"\n`))
+      })
+      cronScheduler.start()
+      session.registry.register(makeCronCreateTool(cronScheduler, cronStore))
+      session.registry.register(makeCronListTool(cronScheduler))
+      session.registry.register(makeCronDeleteTool(cronScheduler))
+      // 刷新 system 的函数现在还要拿记忆，用闭包保留 memoryStore 引用
+      const origRefreshSystem = refreshSystem
+      refreshSystem = () => {
+        origRefreshSystem()
+        const mems = memoryStore.loadAll()
+        if (mems.length > 0) session.system += formatRecall(mems)
+      }
+
       const hookCount = (hooks.PreToolUse ?? []).length
       if (hookCount > 0) {
         process.stderr.write(fmt.dim(`  ⚙ loaded ${hookCount} PreToolUse hook(s) from .floom/hooks.json\n`))
@@ -634,11 +746,17 @@ program
         }),
       )
 
-      // OS 级中断（Ctrl-C / kill）兜底清理：turn 进行中终端非 raw 模式，Ctrl-C 会走默认 SIGINT，
-      // 否则会绕过 killAll 留下后台进程孤儿。这里强制清理后再退出。
-      const onSignal = (sig: NodeJS.Signals, exitCode: number) => {
+      // OS 级中断（Ctrl-C / kill）兜底清理。用 cleanedUp 标志防止信号处理器
+      // 与 finally 块并发执行双重清理。
+      let cleanedUp = false
+      const cleanup = () => {
+        if (cleanedUp) return
+        cleanedUp = true
         shells.killAll()
         void mcpClose()
+      }
+      const onSignal = (sig: NodeJS.Signals, exitCode: number) => {
+        cleanup()
         process.stderr.write(fmt.dim(`\n  ↘ ${sig} — cleaned up background processes, exiting\n`))
         process.exit(exitCode)
       }
@@ -677,8 +795,7 @@ program
           process.stdout.write('\n')
         } finally {
           // 即使 runTurn 抛错（网络/API 错误）也要清理后台进程，绝不留孤儿
-          shells.killAll()
-          await mcpClose()
+          cleanup()
           reader?.close()
         }
         return
@@ -707,6 +824,13 @@ program
       if (yolo) {
         process.stderr.write(
           fmt.yellow('⚠ --yolo: path confinement and shell confirmation disabled\n'),
+        )
+      }
+      // API key 检测：检查 key 是否已加载并显示来源
+      const key = process.env.DEEPSEEK_API_KEY
+      if (!key) {
+        process.stderr.write(
+          fmt.red('\n⚠ NO API KEY — set DEEPSEEK_API_KEY in ~/.floom/.env or .env\n\n'),
         )
       }
       showWelcome({
@@ -767,6 +891,13 @@ program
         },
         save: () => persist(),
         listSessions: () => sessionsText(store),
+        getSettings: () => describeSettings(settings),
+        listMemories: () => {
+          const mems = memoryStore.list()
+          if (mems.length === 0) return fmt.dim('No memories stored.')
+          return fmt.bold(`Memories (${mems.length}):`) + '\n' +
+            mems.map(m => `  ${fmt.cyan(m.name)}  ${fmt.dim(`(${m.type})`)}  ${m.description}`).join('\n')
+        },
       }
 
       try {
@@ -778,11 +909,40 @@ program
           const slash = runSlash(line, slashCtx)
           if (slash.handled) {
             if (slash.exit) break
+            if (slash.skill) {
+              const skill = skillRegistry.get(slash.skill)
+              if (skill) {
+                process.stderr.write(fmt.dim(`  ⚡ ${skill.name}: ${skill.description}\n`))
+                const savedSystem = session.system
+                try {
+                  session.system = skill.systemPrompt
+                  try {
+                    await runTurnWithUI(session, line, write, ui)
+                  } catch (e) {
+                    process.stderr.write(fmt.red(`\n  ✗ ${formatApiError(e)}\n`))
+                  }
+                } finally {
+                  session.system = savedSystem
+                }
+              } else {
+                process.stderr.write(fmt.yellow(`  ⚠ unknown skill: /${slash.skill}\n`))
+              }
+              continue
+            }
             if (slash.output) process.stderr.write(fmt.dim(slash.output) + '\n')
             if (slash.mutated) persist()
             continue
           }
-          await runTurnWithUI(session, line, write, ui)
+          try {
+            await runTurnWithUI(session, line, write, ui)
+          } catch (e) {
+            process.stderr.write(fmt.red(`\n  ✗ ${(e as Error).message ?? String(e)}\n`))
+            if (session.messages.length > 0) {
+              // 移除本次出错的 user 消息，保持状态一致
+              const last = session.messages[session.messages.length - 1]
+              if (last.role === 'user') session.messages.pop()
+            }
+          }
           process.stdout.write('\n')
           if (!title) title = line.slice(0, 60)
           persist()
@@ -790,8 +950,7 @@ program
       } finally {
         // 任何路径退出（正常 / runTurn 抛错）都清理：关后台进程、关 MCP、关 reader
         reader!.close()
-        shells.killAll()
-        await mcpClose()
+        cleanup()
       }
     },
   )
@@ -799,6 +958,7 @@ program
 program
   .command('run <script>')
   .description('run a workflow script')
+  .option('-C, --cwd <dir>', 'project directory')
   .option('-b, --budget <n>', 'token budget', '1000000')
   .option('-j, --journal <path>', 'journal database path', '.floom/journal.db')
   .option('-a, --args <json>', 'JSON args to pass to the script', '{}')
@@ -821,8 +981,15 @@ program
         sandbox: string
         workspace?: string
         cleanup: boolean
+        cwd?: string
       },
     ) => {
+      if (opts.cwd) {
+        try { process.chdir(resolve(opts.cwd)) } catch (e) {
+          process.stderr.write(fmt.red(`ERROR: cannot access "${opts.cwd}": ${(e as Error).message}\n`))
+          process.exit(1)
+        }
+      }
       // 工作流是开发者显式编写的批处理脚本，且已有独立的临时 Workspace 隔离，
       // 不适合逐条确认 shell，也不能把文件工具限死在 cwd（会拦住 workspace 临时目录写入）。
       const registry = makeRegistry({ readPaths: allowAllPaths, writePaths: allowAllPaths, shell: allowAllShell, allowPrivateNet: true })

@@ -22,7 +22,8 @@ export function makeGlobTool(paths: PathPolicy = allowAllPaths): Tool {
     },
     handler: async (i) => {
       const pattern = String(i.pattern)
-      // 含 ".." 段的模式会试图爬出根目录，对编码 agent 没有合法用途，直接拒绝（防逃逸）。
+      // 拒绝绝对路径 pattern 和含 ".." 段的逃逸尝试。
+      if (pattern.startsWith('/') || /^[A-Za-z]:[\\/]/.test(pattern)) return 'no matches'
       if (pattern.split(/[\\/]/).includes('..')) return 'no matches'
       const base = paths.check(i.path ? String(i.path) : '.')
       const matches: string[] = []
@@ -46,6 +47,3 @@ export function makeGlobTool(paths: PathPolicy = allowAllPaths): Tool {
     },
   }
 }
-
-// 向后兼容的非受限单例
-export const globTool = makeGlobTool()

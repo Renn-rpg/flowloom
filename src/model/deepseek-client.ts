@@ -23,12 +23,21 @@ export class DeepSeekClient implements ModelClient {
     this.model = opts.model
     this.maxRetries = opts.maxRetries ?? 3
     this.timeoutMs = opts.timeoutMs ?? 60_000
+    const rawKey = opts.apiKey ?? process.env.DEEPSEEK_API_KEY
+    // 清洗：去掉首尾空白和引号（.env 中可能写了 DEEPSEEK_API_KEY="sk-xxx"）
+    const apiKey = rawKey?.trim().replace(/^["']|["']$/g, '').replace(/^["']|["']$/g, '') ?? ''
+    if (!apiKey && !opts.openai) {
+      throw new Error(
+        'No API key configured. Set DEEPSEEK_API_KEY in .env or pass apiKey option.\n' +
+        '  echo "DEEPSEEK_API_KEY=sk-your-key" > .env',
+      )
+    }
     this.openai =
       opts.openai ??
       new OpenAI({
-        apiKey: opts.apiKey ?? process.env.DEEPSEEK_API_KEY,
+        apiKey,
         baseURL: opts.baseURL ?? process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com',
-        maxRetries: 0, // 关掉 SDK 自带重试，改用我们可见可控的 withRetry
+        maxRetries: 0,
       })
   }
   async generate(req: GenerateRequest, opts?: GenerateOptions): Promise<GenerateResult> {
@@ -40,7 +49,8 @@ export class DeepSeekClient implements ModelClient {
       const resp = await withRetry(() => create({ stream: false }), { maxRetries: this.maxRetries })
       return fromOpenAIResponse(resp)
     }
-    const stream: any = await withRetry(() => create({ stream: true, stream_options: { include_usage: true } }), { maxRetries: this.maxRetries })
+    // 流式请求不重试：已经消费了一半的 stream 重试会导致不一致。
+    const stream: any = await withRetry(() => create({ stream: true, stream_options: { include_usage: true } }), { maxRetries: 0 })
     const acc = new StreamAccumulator()
     for await (const chunk of stream) {
       const { text, reasoning } = acc.addChunk(chunk)

@@ -16,6 +16,20 @@ export function isPrivateHost(hostname: string): boolean {
   if (h.includes(':')) {
     // IPv6 字面量
     if (h === '::1') return true // 环回
+    // IPv4-mapped IPv6: ::ffff:x.x.x.x → 提取 IPv4 部分再判
+    const v4mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+    if (v4mapped) {
+      const ipv4 = v4mapped[1]
+      const ipParts = ipv4.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+      if (ipParts) {
+        const a = Number(ipParts[1]), b = Number(ipParts[2])
+        if (a === 127 || a === 10 || a === 0) return true
+        if (a === 192 && b === 168) return true
+        if (a === 172 && b >= 16 && b <= 31) return true
+        if (a === 169 && b === 254) return true
+        return false
+      }
+    }
     if (h.startsWith('fe80:')) return true // 链路本地
     if (h.startsWith('fc') || h.startsWith('fd')) return true // ULA fc00::/7
     return false
@@ -141,6 +155,3 @@ export function makeWebFetchTool(
     },
   }
 }
-
-// 向后兼容的单例（默认禁私有地址）
-export const webFetchTool = makeWebFetchTool()

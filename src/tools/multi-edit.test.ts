@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { writeFile, readFile, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { multiEditTool } from './multi-edit.js'
+import { makeMultiEditTool } from './multi-edit.js'
 
 let file: string
 beforeEach(async () => {
@@ -12,6 +12,8 @@ beforeEach(async () => {
 })
 
 describe('multiEditTool', () => {
+  const multiEditTool = makeMultiEditTool()
+
   it('applies multiple edits to one file', async () => {
     const r = await multiEditTool.handler({
       path: file,
@@ -29,7 +31,7 @@ describe('multiEditTool', () => {
       path: file,
       edits: [
         { old_string: 'const a = 1', new_string: 'const a = 99' },
-        { old_string: 'const a = 99', new_string: 'const a = 100' }, // 命中前一处的产物
+        { old_string: 'const a = 99', new_string: 'const a = 100' },
       ],
     })
     expect(r).toContain('2 edits')
@@ -41,13 +43,13 @@ describe('multiEditTool', () => {
     const r = await multiEditTool.handler({
       path: file,
       edits: [
-        { old_string: 'const a = 1', new_string: 'const a = 10' }, // 本可成功
-        { old_string: 'NOPE_NOT_PRESENT', new_string: 'x' }, // 第二处失败 → 整体回滚
+        { old_string: 'const a = 1', new_string: 'const a = 10' },
+        { old_string: 'NOPE_NOT_PRESENT', new_string: 'x' },
       ],
     })
     expect(r).toContain('ERROR')
     expect(r).toContain('#2')
-    expect(await readFile(file, 'utf8')).toBe(before) // 文件未被改动
+    expect(await readFile(file, 'utf8')).toBe(before)
   })
 
   it('errors when an old_string is not unique', async () => {

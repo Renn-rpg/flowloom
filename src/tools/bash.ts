@@ -48,11 +48,10 @@ export function makeBashTool(shell: ShellPolicy = allowAllShell, manager?: Backg
       catch (e: any) {
         const timedOut = e.killed && e.signal === 'SIGTERM'
         const prefix = timedOut ? `ERROR: command timed out after ${SHELL_TIMEOUT_MS}ms` : `ERROR: ${e.message}`
-        return `${prefix}\n${e.stdout ?? ''}${e.stderr ?? ''}`.slice(0, 10_000)
+        const out = typeof e.stdout === 'string' ? e.stdout : (e.stdout ? String(e.stdout) : '')
+        const err = typeof e.stderr === 'string' ? e.stderr : (e.stderr ? String(e.stderr) : '')
+        return `${prefix}\n${out}${err}`.slice(0, 10_000)
       }
     },
   }
 }
-
-// 向后兼容的非受限单例（probe.ts / 既有测试依赖）
-export const bashTool = makeBashTool()

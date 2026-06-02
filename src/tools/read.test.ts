@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { writeFile, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { readTool, makeReadTool } from './read.js'
+import { makeReadTool } from './read.js'
 import { confineToRoot, denySecrets } from './permissions.js'
 
 let dir: string
@@ -15,7 +15,8 @@ beforeAll(async () => {
 
 describe('readTool', () => {
   it('returns file contents', async () => {
-    expect(await readTool.handler({ path: file })).toContain('hello world')
+    const tool = makeReadTool()
+    expect(await tool.handler({ path: file })).toContain('hello world')
   })
 })
 
@@ -26,7 +27,6 @@ describe('makeReadTool with confineToRoot', () => {
   })
 
   it('rejects reading a file outside the root', async () => {
-    // 把 root 设为 file 的同级子目录，则 file 自身在 root 之外
     const tool = makeReadTool(confineToRoot(join(dir, 'sub')))
     await expect(
       tool.handler({ path: join(dirname(file), 'a.txt') }),

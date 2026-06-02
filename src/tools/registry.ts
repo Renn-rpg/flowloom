@@ -9,6 +9,6 @@ export class ToolRegistry {
   async run(name: string, input: Record<string, unknown>): Promise<string> {
     const t = this.tools.get(name)
     if (!t) return `ERROR: unknown tool "${name}"`
-    try { return await t.handler(input) } catch (e) { return `ERROR: ${(e as Error).message}` }
+    try { return await t.handler(input) } catch (e) { return `ERROR: ${e instanceof Error ? e.message : String(e)}` }
   }
 }

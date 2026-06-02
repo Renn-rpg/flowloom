@@ -7,7 +7,6 @@ import {
   isSensitivePath,
   allowAllShell,
   denyAllShell,
-  confirmShell,
 } from './permissions.js'
 
 describe('confineToRoot', () => {
@@ -114,12 +113,14 @@ describe('shell policies', () => {
     expect(await denyAllShell.authorize('echo hi')).toBe(false)
   })
 
-  it('confirmShell delegates to the injected callback', async () => {
+  it('custom shell policy delegates to the authorize callback', async () => {
     const seen: string[] = []
-    const policy = confirmShell((cmd) => {
-      seen.push(cmd)
-      return cmd.startsWith('echo')
-    })
+    const policy = {
+      authorize: (cmd: string) => {
+        seen.push(cmd)
+        return cmd.startsWith('echo')
+      },
+    }
     expect(await policy.authorize('echo ok')).toBe(true)
     expect(await policy.authorize('curl evil')).toBe(false)
     expect(seen).toEqual(['echo ok', 'curl evil'])

@@ -73,7 +73,6 @@ describe('loadHooks', () => {
     const cfg = loadHooks(dir)
     expect(cfg.PreToolUse).toHaveLength(1)
     expect(cfg.PreToolUse![0].decision).toBe('deny')
-    expect(cfg.PostToolUse).toEqual([])
   })
 
   it('returns empty config for malformed json', async () => {

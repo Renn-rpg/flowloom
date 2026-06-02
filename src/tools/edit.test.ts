@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { writeFile, readFile, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { editTool } from './edit.js'
+import { makeEditTool } from './edit.js'
 
 let file: string
 beforeEach(async () => {
@@ -12,6 +12,8 @@ beforeEach(async () => {
 })
 
 describe('editTool', () => {
+  const editTool = makeEditTool()
+
   it('replaces a unique string', async () => {
     const r = await editTool.handler({ path: file, old_string: 'foo bar', new_string: 'baz qux' })
     expect(r).toContain('edited')

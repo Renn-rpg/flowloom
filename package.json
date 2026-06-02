@@ -1,6 +1,6 @@
 {
   "name": "flowloom",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "An open-source, DeepSeek-native agentic coding CLI — infinitely close to Claude Code.",
   "type": "module",
   "bin": {

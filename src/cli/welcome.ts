@@ -60,8 +60,8 @@ export function showWelcome(opts: {
           chalk.dim(' menu  ·  ') +
           chalk.cyan('Tab/↑↓') +
           chalk.dim(' pick  ·  ') +
-          chalk.cyan('Ctrl+O') +
-          chalk.dim(' expand thinking'),
+          chalk.cyan('Ctrl+O/E') +
+          chalk.dim(' expand'),
       ),
     )
     out.push(
@@ -72,7 +72,7 @@ export function showWelcome(opts: {
           chalk.cyan('Ctrl+C') +
           chalk.dim(' cancel  ·  ') +
           chalk.cyan('--yolo') +
-          chalk.dim(' guards'),
+          chalk.dim(' off'),
       ),
     )
     out.push(blankLine)

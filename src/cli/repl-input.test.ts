@@ -15,7 +15,7 @@ describe('decodeKey', () => {
     expect(decodeKey('\x04')).toEqual({ t: 'ctrl-d' })
     expect(decodeKey('\x0f')).toEqual({ t: 'ctrl-o' })
     expect(decodeKey('\x01')).toEqual({ t: 'home' }) // ctrl-a
-    expect(decodeKey('\x05')).toEqual({ t: 'end' }) // ctrl-e
+    expect(decodeKey('\x05')).toEqual({ t: 'ctrl-e' })
   })
   it('maps arrows and nav (CSI and SS3 forms)', () => {
     expect(decodeKey('\x1b[A')).toEqual({ t: 'up' })
@@ -169,7 +169,7 @@ describe('reduceKey: control actions', () => {
   it('Ctrl-O requests a verbose toggle without changing the buffer', () => {
     const s = st({ buffer: 'keep me', cursor: 4 })
     const r = reduce(s, { t: 'ctrl-o' })
-    expect(r.action).toBe('toggle-verbose')
+    expect(r.action).toBe('expand-one')
     expect(r.state.buffer).toBe('keep me')
     expect(r.state.cursor).toBe(4)
   })

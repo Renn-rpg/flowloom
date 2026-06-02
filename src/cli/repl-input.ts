@@ -30,6 +30,7 @@ export type Key =
   | { t: 'ctrl-c' }
   | { t: 'ctrl-d' }
   | { t: 'ctrl-o' }
+  | { t: 'ctrl-e' }
   | { t: 'unknown' }
 
 // 把单个按键（或一段转义序列、或一段可见字符的粘贴）解析为语义按键。
@@ -51,8 +52,8 @@ export function decodeKey(s: string): Key {
       return { t: 'ctrl-o' }
     case '\x01': // Ctrl-A → 行首
       return { t: 'home' }
-    case '\x05': // Ctrl-E → 行尾
-      return { t: 'end' }
+    case '\x05': // Ctrl-E → 展开全部细节
+      return { t: 'ctrl-e' }
     case '\x1b':
       return { t: 'esc' }
     case '\x1b[A':
@@ -127,7 +128,7 @@ export interface EditorState {
   dismissed: boolean // 用户按 Esc 暂时收起下拉（再编辑即恢复）
 }
 
-export type EditorAction = 'redraw' | 'submit' | 'cancel' | 'toggle-verbose' | 'none'
+export type EditorAction = 'redraw' | 'submit' | 'cancel' | 'expand-one' | 'expand-all' | 'none'
 
 export interface ReduceResult {
   state: EditorState
@@ -203,7 +204,9 @@ export function reduceKey(state: EditorState, key: Key, items: CompletionItem[])
       // 空行 EOF → 退出；非空忽略
       return state.buffer === '' ? { state, action: 'cancel' } : none()
     case 'ctrl-o':
-      return { state, action: 'toggle-verbose' }
+      return { state, action: 'expand-one' }
+    case 'ctrl-e':
+      return { state, action: 'expand-all' }
     default:
       return none()
   }
@@ -214,10 +217,10 @@ export function reduceKey(state: EditorState, key: Key, items: CompletionItem[])
 export interface ReplReaderOptions {
   input?: NodeJS.ReadStream
   out?: NodeJS.WriteStream
-  // 可见提示符（无颜色），默认 'floom> '。可传函数，每次读取行时求值（如计划模式 'floom(plan)> '）。
+  // 可见提示符（无颜色），默认 '❯ '。可传函数，每次读取行时求值。
   promptText?: string | (() => string)
-  colorPrompt?: (s: string) => string // 提示符着色（默认原样）
-  onToggleVerbose?: () => void // ctrl+o 回调（打印状态/展开上一轮思考，自带换行）
+  colorPrompt?: (s: string) => string // 提示符着色（默认绿色 ❯）
+  onExpand?: (mode: 'one' | 'all') => void // ctrl+o/ctrl+e 回调
   maxMenu?: number // 下拉最多展示项数，默认 8
 }
 
@@ -226,7 +229,7 @@ export class ReplReader {
   private out: NodeJS.WriteStream
   private promptText: string | (() => string)
   private colorPrompt: (s: string) => string
-  private onToggleVerbose?: () => void
+  private onExpand?: (mode: 'one' | 'all') => void
   private maxMenu: number
   private rl: Interface | null = null
 
@@ -243,9 +246,9 @@ export class ReplReader {
   constructor(opts: ReplReaderOptions = {}) {
     this.input = opts.input ?? process.stdin
     this.out = opts.out ?? process.stderr
-    this.promptText = opts.promptText ?? 'floom> '
-    this.colorPrompt = opts.colorPrompt ?? ((s) => s)
-    this.onToggleVerbose = opts.onToggleVerbose
+    this.promptText = opts.promptText ?? '❯ '
+    this.colorPrompt = opts.colorPrompt ?? ((s) => fmt.green(s))
+    this.onExpand = opts.onExpand
     this.maxMenu = opts.maxMenu ?? 8
     this.decoder = new StringDecoder('utf8')
   }
@@ -302,6 +305,8 @@ export class ReplReader {
         if (wasPaused) input.pause()
       }
 
+      const tw = out.columns ?? 80
+
       const render = () => {
         const comp = computeCompletions(st.buffer)
         const open = comp.items.length > 0 && !st.dismissed
@@ -309,51 +314,56 @@ export class ReplReader {
           st.menuIndex = comp.items.length ? st.menuIndex % comp.items.length : 0
         }
         const menu = open ? comp.items.slice(0, this.maxMenu) : []
-        const width = (out.columns ?? 80) - 1
-        const tw = out.columns ?? 80 // 终端总列宽
 
-        // 先回到本帧渲染区域的起始行（prevRenderHeight 来自上一帧），再清屏，
-        // 避免因 prompt+buffer 换行后 \r 只到折行行首而清不干净。
-        if (prevRenderHeight > 1) out.write(`\x1b[${prevRenderHeight - 1}A`)
+        // 光标目前在输入区，上移 prevRenderHeight 行回到帧顶（上边框），然后清屏
+        if (prevRenderHeight > 0) out.write(`\x1b[${prevRenderHeight}A`)
         out.write('\r\x1b[J')
 
+        // ── 上边框 ──
+        out.write(`${fmt.inputLine(tw)}\n`)
+
+        // ── ❯ 提示符 + 输入文本 ──
         out.write(colored + st.buffer)
+
+        // ── 下拉菜单 ──
         for (let i = 0; i < menu.length; i++) {
           const it = menu[i]
           const ptr = i === st.menuIndex ? '❯ ' : '  '
           let text = `${ptr}${it.label}  ${it.desc}`
-          if (text.length > width) text = text.slice(0, Math.max(1, width - 1)) + '…'
+          const maxWidth = tw - 2
+          if (text.length > maxWidth) text = text.slice(0, Math.max(1, maxWidth - 1)) + '…'
           out.write('\n' + (i === st.menuIndex ? fmt.cyan(text) : fmt.dim(text)))
         }
 
-        // 计算本帧总视觉行数（含换行 + 菜单）
-        // 必须用视觉宽度——中文/全角字符占 2 列，.length 只计 1
-        const totalWidth = promptVis + visualWidth(st.buffer)
+        // ── 下边框 ──
+        out.write(`\n${fmt.inputLine(tw)}`)
 
-        // 计算光标的视觉行/列（考虑换行）
-        // st.cursor 是字符下标，用 buffer 前缀的视觉宽度转成列距
+        // 计算本帧总视觉行数及光标位置
+        const totalWidth = promptVis + visualWidth(st.buffer)
+        const inputLines = Math.floor(totalWidth / tw) + 1
+        const totalRenderLines = 1 + inputLines + menu.length + 1
+
         const cursorOffset = promptVis + visualWidth(st.buffer.slice(0, st.cursor))
         const cursorLine = Math.floor(cursorOffset / tw)
         const cursorCol = cursorOffset % tw
 
-        // 从内容末尾回到光标所在行。
-        // postWriteLine: 写入 colored+st.buffer 后光标所在的视觉行（已考虑换行）。
-        // 旧公式 (bufLines-1-cursorLine) 在 totalWidth%tw==0 时少计 1 行，
-        // 使光标停在折行后的下一行而非光标实际行——光标因此「居中」。
-        const postWriteLine = Math.floor(totalWidth / tw)
-        const linesUp = Math.max(0, postWriteLine - cursorLine) + menu.length
-        prevRenderHeight = cursorLine + 1
-        if (linesUp > 0) out.write(`\x1b[${linesUp}A`)
+        // 光标从帧顶(上边框)到当前位置的行数 = 上边框(1) + 输入区内行号
+        // 存为 prevRenderHeight，供下次 render 从光标位置回到帧顶
+        prevRenderHeight = 1 + cursorLine
+
+        // 光标目前在下边框之后。上移到输入区光标位置。
+        const linesUpToCursor = menu.length + 1 + (inputLines - 1 - cursorLine)
+        if (linesUpToCursor > 0) out.write(`\x1b[${linesUpToCursor}A`)
         out.write('\r')
         if (cursorCol > 0) out.write(`\x1b[${cursorCol}C`)
       }
 
       const finalize = () => {
-        // 若上一帧渲染跨了多行（prompt+buffer 换行），光标停在非首行，
-        // 需先上移到首行再清屏，否则旧折行的残留不会被 \x1b[J 清除。
-        if (prevRenderHeight > 1) out.write(`\x1b[${prevRenderHeight - 1}A`)
+        // 光标在输入区，上移回到顶部边框行，清除整个边框区域
+        if (prevRenderHeight > 0) out.write(`\x1b[${prevRenderHeight}A`)
         out.write('\r\x1b[J')
-        out.write(colored + st.buffer + '\n') // 把最终输入留在屏上，光标移到下一行
+        // 输出不带边框的最终输入行到 scrollback
+        out.write(`${colored}${st.buffer}\n`)
       }
 
       const apply = (key: Key): boolean => {
@@ -371,13 +381,10 @@ export class ReplReader {
             restore()
             resolve(null)
             return true
-          case 'toggle-verbose': {
-            // 只清当前提示行（\x1b[0K = 擦到行尾，不含下方），让下方的模型输出不受影响。
-            // 然后打印展开内容到 scrollback，再在新行重绘提示符。
+          case 'expand-one':
+          case 'expand-all': {
             out.write('\r\x1b[0K')
-            this.onToggleVerbose?.()
-            // 回调已打印 N 行到 scrollback；光标落在最后一行末尾。
-            // 重置 render 高度，让后续 render 直接从当前行开始管理。
+            this.onExpand?.(r.action === 'expand-all' ? 'all' : 'one')
             prevRenderHeight = 1
             render()
             return false

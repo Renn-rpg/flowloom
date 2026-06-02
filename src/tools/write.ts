@@ -9,6 +9,3 @@ export function makeWriteTool(paths: PathPolicy = allowAllPaths): Tool {
     handler: async (i) => { const p = paths.check(String(i.path)); await mkdir(dirname(p), { recursive: true }); await writeFile(p, String(i.content), 'utf8'); return `wrote ${p}` },
   }
 }
-
-// 向后兼容的非受限单例
-export const writeTool = makeWriteTool()

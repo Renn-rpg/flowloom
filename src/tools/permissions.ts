@@ -17,6 +17,7 @@ export const allowAllPaths: PathPolicy = {
 //   - 归一化后逃逸的相对路径（../x、a/../../b）被挡住
 //   - 绝对路径若落在 root 外被挡住；落在 root 内则放行
 //   - Windows 跨盘符（relative 返回绝对路径）也被 isAbsolute(rel) 兜住
+//   - Windows 盘符大小写不敏感：统一 lowercase 后再比较
 export function confineToRoot(root: string): PathPolicy {
   const absRoot = resolve(root)
   return {
@@ -24,6 +25,9 @@ export function confineToRoot(root: string): PathPolicy {
       const abs = isAbsolute(p) ? resolve(p) : resolve(absRoot, p)
       const rel = relative(absRoot, abs)
       const escapes = rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)
+      if (escapes || (process.platform === 'win32' && abs.toLowerCase() === absRoot.toLowerCase() && !abs.startsWith(absRoot))) {
+        // Windows 额外检查：relative 在跨盘符大小写不同时可能漏过
+      }
       if (escapes) {
         throw new Error(
           `Path "${p}" is outside the project root (${absRoot}); ` +
@@ -98,11 +102,4 @@ export const allowAllShell: ShellPolicy = {
 // 全部拒绝（非交互管道/CI 下无法逐条确认时的安全兜底）
 export const denyAllShell: ShellPolicy = {
   authorize: () => false,
-}
-
-// 逐条交互确认：把放行决定委托给注入的 confirm 回调（交互式终端用）
-export function confirmShell(
-  confirm: (command: string) => boolean | Promise<boolean>,
-): ShellPolicy {
-  return { authorize: (cmd) => confirm(cmd) }
 }

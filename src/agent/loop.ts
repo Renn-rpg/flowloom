@@ -79,6 +79,9 @@ export async function runTurn(
   for (let iter = 0; iter < s.maxIters; iter++) {
     callbacks.onThinking?.()
 
+    // 保存快照：若 generate 异常，恢复消息数组以避免工具结果孤儿
+    const snapshotLen = s.messages.length
+
     // 上下文上限保护：发请求前若估算 token 超预算，从最旧对话轮整轮丢弃。
     // 当前轮（最新 user 及其后续）始终保留，故多轮工具调用中不会丢掉进行中的上下文。
     if (s.contextTokens > 0) {
@@ -95,16 +98,23 @@ export async function runTurn(
     }
 
     const t0 = Date.now()
-    const res = await s.client.generate(
-      {
-        system: s.system,
-        messages: s.messages,
-        tools: s.registry.specs(),
-        model: s.model,
-        maxTokens: s.maxTokens,
-      },
-      { onText: callbacks.onText, onReasoning: callbacks.onReasoning },
-    )
+    let res
+    try {
+      res = await s.client.generate(
+        {
+          system: s.system,
+          messages: s.messages,
+          tools: s.registry.specs(),
+          model: s.model,
+          maxTokens: s.maxTokens,
+        },
+        { onText: callbacks.onText, onReasoning: callbacks.onReasoning },
+      )
+    } catch (e) {
+      // generate 异常时恢复消息数组到本轮开始前，避免工具结果孤儿导致后续 API 400
+      s.messages = s.messages.slice(0, snapshotLen)
+      throw e
+    }
     callbacks.onThinkingDone?.(Date.now() - t0)
 
     s.usage.inputTokens += res.usage.inputTokens
@@ -126,14 +136,14 @@ export async function runTurn(
     for (const call of res.toolCalls) {
       callbacks.onToolCall?.(call.name, call.input)
       const toolT0 = Date.now()
-      // PreToolUse 闸（hooks）：被拦则不执行工具，把原因当作 tool error 回喂模型，
-      // 模型据此知晓被拦并自行调整，而非静默失败。
+      // PreToolUse 闸（hooks）：被拦则不执行工具。使用 DENIED: 前缀区分于真正的工具执行错误，
+      // 让模型明确知晓这是人类/策略拒绝，而非工具执行失败。
       const decision = s.gate ? await s.gate(call.name, call.input) : { allow: true }
       const output = decision.allow
         ? await s.registry.run(call.name, call.input)
-        : `ERROR: blocked by hook${decision.message ? ': ' + decision.message : ''}`
+        : `DENIED: blocked by hook${decision.message ? ': ' + decision.message : ''}`
       const toolMs = Date.now() - toolT0
-      const isError = output.startsWith('ERROR')
+      const isError = output.startsWith('ERROR') || output.startsWith('DENIED')
       callbacks.onToolResult?.(call.name, toolMs, isError)
       s.messages.push({
         role: 'tool',

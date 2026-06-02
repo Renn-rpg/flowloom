@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { makeBashTool } from './bash.js'
-import { allowAllShell, denyAllShell, confirmShell } from './permissions.js'
+import { allowAllShell, denyAllShell } from './permissions.js'
 import { BackgroundShells } from './shell-manager.js'
 
 describe('makeBashTool shell policy gating', () => {
@@ -19,8 +19,10 @@ describe('makeBashTool shell policy gating', () => {
     expect(out).not.toContain('not authorized')
   })
 
-  it('uses the confirm callback to decide per command', async () => {
-    const tool = makeBashTool(confirmShell((cmd) => cmd.startsWith('echo')))
+  it('uses the authorize callback to decide per command', async () => {
+    const tool = makeBashTool({
+      authorize: (cmd: string) => cmd.startsWith('echo'),
+    })
     const allowed = await tool.handler({ command: 'echo ok' })
     const blocked = await tool.handler({ command: 'curl http://evil' })
     expect(allowed).not.toContain('not authorized')

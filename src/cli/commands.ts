@@ -16,6 +16,8 @@ export interface SlashContext {
   clearHistory(): number
   save(): boolean
   listSessions(): string
+  listMemories(): string
+  getSettings(): string
 }
 
 export interface SlashResult {
@@ -23,6 +25,7 @@ export interface SlashResult {
   output?: string // 要打印的反馈（cli 决定走 stderr + 配色）
   exit?: boolean // /exit /quit
   mutated?: boolean // 改了持久化状态（model/effort/clear），cli 据此落盘
+  skill?: string // 技能名（如 'code-review'），cli 据此 dispatch 子 agent
 }
 
 interface SlashSpec {
@@ -40,6 +43,11 @@ export const SLASH_COMMANDS: Record<string, SlashSpec> = {
   usage: { usage: '/usage', desc: 'show token usage this session' },
   save: { usage: '/save', desc: 'save the session now' },
   sessions: { usage: '/sessions', desc: 'list saved sessions in this project' },
+  memory: { usage: '/memory', desc: 'list persistent memories' },
+  'code-review': { usage: '/code-review', desc: 'review current changes for bugs and cleanups' },
+  simplify: { usage: '/simplify', desc: 'review changes for reuse and simplification' },
+  architect: { usage: '/architect', desc: 'analyze architecture and propose designs' },
+  config: { usage: '/config', desc: 'show effective settings' },
   exit: { usage: '/exit', desc: 'quit floom' },
 }
 
@@ -128,6 +136,14 @@ export function runSlash(line: string, ctx: SlashContext): SlashResult {
       return { handled: true, output: ctx.save() ? 'session saved' : 'save failed' }
     case 'sessions':
       return { handled: true, output: ctx.listSessions() }
+    case 'memory':
+      return { handled: true, output: ctx.listMemories() }
+    case 'config':
+      return { handled: true, output: ctx.getSettings() }
+    case 'code-review':
+    case 'simplify':
+    case 'architect':
+      return { handled: true, skill: name }
     default:
       return { handled: true, output: `unknown command: /${name} — try /help` }
   }

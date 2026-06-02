@@ -35,6 +35,11 @@ export interface TrimResult {
 // 把消息流切成「对话轮」：每个 user 消息开启新的一轮，其后的 assistant / tool
 // 消息归入该轮。runTurn 保证 messages[0] 一定是 user。
 function splitRounds(messages: InternalMessage[]): InternalMessage[][] {
+  if (messages.length > 0 && messages[0].role !== 'user') {
+    // 防御性检查：非正常消息流（如 corrupted session store），
+    // 插入虚拟 user 消息确保后续 API 请求不产生孤儿 tool_call_id。
+    return [[{ role: 'user', text: '[truncated]' }], ...messages.map(m => [m])]
+  }
   const rounds: InternalMessage[][] = []
   for (const m of messages) {
     if (m.role === 'user' || rounds.length === 0) rounds.push([m])

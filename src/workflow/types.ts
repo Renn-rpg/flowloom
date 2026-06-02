@@ -103,13 +103,13 @@ export interface Runtime {
 }
 
 export interface RuntimeContext {
-  runScript(
-    fn: (...args: unknown[]) => unknown,
-    ...args: unknown[]
-  ): Promise<unknown>
   run(
     fn: (...args: any[]) => any,
     ...args: any[]
+  ): Promise<unknown>
+  runInSandbox(
+    fn: (...args: unknown[]) => unknown,
+    ...args: unknown[]
   ): Promise<unknown>
 }
 

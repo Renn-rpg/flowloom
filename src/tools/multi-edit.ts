@@ -53,6 +53,3 @@ export function makeMultiEditTool(paths: PathPolicy = allowAllPaths): Tool {
     },
   }
 }
-
-// 向后兼容的非受限单例
-export const multiEditTool = makeMultiEditTool()

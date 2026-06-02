@@ -45,6 +45,11 @@ const sandboxBase = Object.freeze({
   Date: wrapDate(),
   Math: wrapMath(),
   console: undefined,
+  // 阻断 constructor 逃逸路径：Function 和 eval 在 sandbox 内不可用。
+  // 注意：node:vm 不是安全沙箱，宿主函数引用仍可访问外部作用域。
+  // 对完全隔离需求应使用 isolated-vm。
+  Function: undefined,
+  eval: undefined,
 })
 
 export class NodeVmRuntime implements Runtime {
@@ -62,16 +67,15 @@ export class NodeVmRuntime implements Runtime {
     })
     const timeoutMs = this.syncTimeoutMs
     return {
+      // 注入宿主函数引用到 sandbox 并调用。宿主函数的 globalThis 仍是宿主上下文，
+      // 适用于需要访问复杂宿主对象（如 WorkflowCtx）的场景。workflow-runtime 走此路径。
       async run(
         fn: (...args: any[]) => any,
         ...args: any[]
       ): Promise<unknown> {
-        // 注入真正的函数引用（不序列化）到 sandbox，关闭 context 的 eval/Function
         const fnKey = `__injected_fn_${runCounter++}`
         const argKeys = args.map((_, i) => `__injected_arg_${runCounter}_${i}`)
-        // 注入函数
         ;(sandboxCtx as any)[fnKey] = fn
-        // 注入参数
         argKeys.forEach((k, i) => { (sandboxCtx as any)[k] = args[i] })
         try {
           const code = `${fnKey}.apply(null, [${argKeys.join(',')}])`
@@ -85,13 +89,15 @@ export class NodeVmRuntime implements Runtime {
           argKeys.forEach((k) => delete (sandboxCtx as any)[k])
         }
       },
-      async runScript(
+
+      // 在 sandbox 内执行函数体（序列化后 eval 到 sandbox 上下文），
+      // 函数内的 Date/Math 等指向 sandbox 的包装版本。用于测试沙箱确定性行为。
+      async runInSandbox(
         fn: (...args: unknown[]) => unknown,
         ...args: unknown[]
       ): Promise<unknown> {
         const fnBody = fn.toString()
         const argsJson = JSON.stringify(args)
-        // IIFE: 在 sandbox 内执行 fn.apply(null, args)
         const code = `
           (function() {
             const __fn = (${fnBody});
@@ -101,11 +107,7 @@ export class NodeVmRuntime implements Runtime {
         const result = vm.runInContext(code, sandboxCtx, {
           timeout: timeoutMs,
         })
-        // result 可能是 Promise（async fn），需 await 解包
-        if (
-          result != null &&
-          typeof (result as any).then === 'function'
-        ) {
+        if (result != null && typeof (result as any).then === 'function') {
           return await result
         }
         return result

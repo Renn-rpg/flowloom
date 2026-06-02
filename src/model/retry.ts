@@ -27,8 +27,43 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
     } catch (err) {
       lastErr = err
       if (attempt === max || !retryable(err)) throw err
-      await sleep(base * 2 ** attempt) // 指数退避：500, 1000, 2000...
+      await sleep(base * 2 ** attempt)
     }
   }
   throw lastErr
+}
+
+// 从 API 错误中提取有用的错误信息
+export function formatApiError(err: unknown): string {
+  const e = err as any
+  const name = e?.name ?? e?.constructor?.name ?? ''
+  const msg = e?.message ?? String(err)
+
+  // 拼装：ErrorName: message [detail=value, ...]
+  const parts: string[] = []
+  if (name && name !== 'Error') parts.push(name)
+
+  // HTTP status
+  if (e?.status) parts.push(`HTTP ${e.status}`)
+
+  // 关键字段
+  for (const k of ['code', 'type', 'param']) {
+    if (e?.[k]) parts.push(`${k}=${e[k]}`)
+  }
+
+  // 嵌套 error/body
+  if (e?.error?.message) parts.push(`api: ${e.error.message}`)
+  if (e?.body?.error?.message) parts.push(`body: ${e.body.error.message}`)
+
+  // 底层 cause
+  if (e?.cause) {
+    const c = e.cause
+    parts.push(`cause: ${c?.message ?? c?.code ?? String(c)}`)
+  }
+
+  // 请求 URL
+  if (e?.request_id) parts.push(`req=${e.request_id}`)
+
+  parts.push(msg)
+  return parts.join(' | ')
 }

@@ -9,7 +9,6 @@ export interface McpTool {
 export interface McpCallResult {
   content: any[]
   isError: boolean
-  structuredContent?: unknown
 }
 
 // 我们请求时声明的 MCP 协议版本。spec 规定 server 支持则回同版本，否则回它支持的版本；
@@ -96,7 +95,6 @@ export class McpClient {
     return {
       content: Array.isArray(result?.content) ? result.content : [],
       isError: result?.isError === true,
-      structuredContent: result?.structuredContent,
     }
   }
 

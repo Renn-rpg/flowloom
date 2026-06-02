@@ -157,15 +157,15 @@ export async function executeWorkflow(
       throw new Error(`agent count limit (${MAX_AGENTS}) exceeded`)
     }
 
-    // seq 在任何可抛异常（信号量/预算）之前同步分配：保证唯一、单调，
-    // 且在 parallel() 下按 thunk 调用顺序确定（利于 resume）。错误路径复用同一 seq，
-    // 避免用 seq-1 与上一条已成功记录的 (runId, seq) 主键冲突被 INSERT OR REPLACE 覆盖。
-    const currentSeq = seq++
     // 进度标签：优先用脚本传的 label/phase，否则泛称 agent
     const label = String(agentOpts?.label ?? agentOpts?.phase ?? 'agent')
 
-    // 硬控 2: 信号量获取（排队等待）
+    // 硬控 2: 信号量获取（排队等待）。
+    // seq 在信号量获取之后分配，确保并发场景下 seq 唯一且与执行顺序一致。
     const release = await semaphore.acquire()
+
+    // seq 在 acquire 之后分配（已串行化），保证唯一 + 单调。
+    const currentSeq = seq++
 
     let t0 = 0
     try {
