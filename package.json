@@ -1,7 +1,7 @@
 {
   "name": "flowloom",
-  "version": "0.9.0",
-  "description": "An open-source, DeepSeek-native agentic coding CLI — infinitely close to Claude Code.",
+  "version": "0.12.0",
+  "description": "DeepSeek FlowLoom — an open-source, DeepSeek-native agentic coding CLI rivaling Claude Code.",
   "type": "module",
   "bin": {
     "floom": "./dist/cli.js"

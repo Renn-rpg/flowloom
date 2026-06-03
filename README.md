@@ -2,16 +2,16 @@
   <img src="assets/logo.svg" alt="FlowLoom" width="180">
 </p>
 
-# FlowLoom
+# DeepSeek FlowLoom
 
-**An open-source, DeepSeek-native agentic coding CLI —— infinitely close to Claude Code.**
+**An open-source, DeepSeek-native agentic coding CLI — rivaling Claude Code at a fraction of the cost.**
 
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
-[![Version](https://img.shields.io/badge/version-0.8.0-blue)](https://github.com/Renn-rpg/flowloom)
+[![Version](https://img.shields.io/badge/version-0.12.0-blue)](https://github.com/Renn-rpg/deepseek-flowloom)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
-FlowLoom (`floom`) is a terminal-based coding agent built for **DeepSeek**. It reads, writes, edits files, runs shell commands, and orchestrates **multi-agent workflows** — all from your terminal. Think of it as Claude Code, but native to the DeepSeek API.
+DeepSeek FlowLoom (`floom`) is a terminal-based coding agent purpose-built for the **DeepSeek API**. It reads, writes, edits files, runs shell commands, and orchestrates **multi-agent workflows** — all from your terminal. Think of it as Claude Code, but native to DeepSeek and fully open source.
 
 ```
 $ floom "Add unit tests for the auth module"
@@ -306,7 +306,7 @@ All DeepSeek claims above are backed by [docs/deepseek-fact-check.md](docs/deeps
 
 ```bash
 npm install        # Install dependencies
-npm test           # Run 345 tests (Vitest)
+npm test           # Run 506 tests (Vitest)
 npm run test:watch # Watch mode
 npm run dev        # tsx hot-reload
 npm run build      # Compile TypeScript
@@ -340,7 +340,7 @@ npm run probe      # Tool-calling reliability probe (needs API key)
 | Phase 8 | ✅ | [Plan Mode](docs/plan-mode.md): read-only research → `exit_plan_mode` proposes a plan → approve to unlock edits (`/plan` or `--plan`) |
 | Phase 9 | ✅ | [Background tasks](docs/background-tasks.md): `run_shell background:true` + `bash_output` / `kill_shell` for servers/watchers/builds |
 | Phase 10 | ✅ | [Context compaction](docs/compaction.md): over-budget history is summarized into a synopsis (auto, silent, falls back to trim) instead of dropped; manual `/compact` |
-| Next | 📋 | git/worktree tools, PostToolUse hook execution |
+| Phase 11 | ✅ | All 58 improvement items — sandbox hardening, test coverage, CLI splitting, streaming timeout, circuit breaker, session persistence, MCP reconnect, Markdown rendering, syntax highlighting, command history, unified diff, config hot-reload, first-run wizard, sub-agent progress tree, /retry, turn separators, project detection, and more. |
 
 ---
 

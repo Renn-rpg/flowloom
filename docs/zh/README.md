@@ -1,12 +1,12 @@
-# FlowLoom 中文说明
+# DeepSeek FlowLoom 中文说明
 
-FlowLoom (`floom`) 是一个面向 **DeepSeek** 的开源 agentic 编码 CLI，无限接近 Claude Code 体验。
+DeepSeek FlowLoom (`floom`) 是一个面向 **DeepSeek** 的开源 agentic 编码 CLI，媲美 Claude Code 体验，成本仅为其一小部分。
 
 ## 快速开始
 
 ```bash
 # 要求 Node.js >= 24
-git clone https://github.com/Renn-rpg/flowloom.git
+git clone https://github.com/Renn-rpg/deepseek-flowloom.git
 cd flowloom
 npm install && npm run build
 
