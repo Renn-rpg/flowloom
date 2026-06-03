@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased] — review & hardening pass
+
+### Security
+- **web_fetch DNS-rebinding 防护**:对域名做解析后 IP 校验(`assertHostPublic`),拦截解析到内网/环回地址的域名;重定向每一跳同样校验
+- **web_fetch 响应体大小上限**:流式读取并按 `MAX_BYTES` 截断,缺失 `content-length` 的超大响应不再耗尽内存(`readCapped`)
+- **路径限界识破软链逃逸**:`confineToRoot` 用 realpath 解析最近已存在祖先,拦截项目内软链/Windows junction 指向项目外的情形
+
+### Bug Fixes
+- **High**:工作流全缓存恢复路径用量恒为 0 —— `closeRun` 不回写 `runs.total_*`,改为从 `agent_calls` 逐调用记录求和
+- 流式请求超时改为**空闲超时**(每 chunk 重置),稳定的长输出不再被「总时长」上限误杀
+
+### CLI/UX & Docs
+- system prompt 补全工具清单:加入 `web_search` 并提示存在 git/task/remember/cron 工具家族(此前模型对它们「隐身」)
+- 修正 README Phase 11 虚标(此前声称的 Markdown 渲染 / 语法高亮尚未实现)
+- 新增中文文档 `README.zh-CN.md`,与英文 README 互链
+
+### Refactor / Tests
+- 抽出 `src/cli/wiring.ts`(`registerGitTools` / `registerTaskTools` / `registerCronTools`),为 1100+ 行的 `cli.ts` 入口瘦身
+- task 单测改用 `os.tmpdir()` + `mkdtemp` + 清理,不再在仓库工作树留 `.floom-test-*` 产物;`.gitignore` 加防御行
+- 测试数 506 → 511(新增软链逃逸、DNS 重绑定、响应体上限等用例)
+
 ## [0.10.0] — Unreleased
 
 ### Architecture

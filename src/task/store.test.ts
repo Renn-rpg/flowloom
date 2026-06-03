@@ -1,17 +1,22 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdirSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { TaskStore } from './store.js'
 import type { Task } from './types.js'
 
-const tmpDir = resolve(process.cwd(), '.floom-test-task-store')
+// 每个测试一个独立的系统临时目录，跑完即删——不在仓库工作树里留产物。
+let tmpDir: string
 
 function makeStore(): TaskStore {
-  mkdirSync(tmpDir, { recursive: true })
   return new TaskStore(tmpDir)
 }
 
 beforeEach(() => {
+  tmpDir = mkdtempSync(join(tmpdir(), 'floom-task-store-'))
+})
+
+afterEach(() => {
   try { rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ok */ }
 })
 

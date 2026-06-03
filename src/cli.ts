@@ -54,14 +54,12 @@ import { architectSkill } from './skills/builtin/architect.js'
 import { deepReviewSkill } from './skills/builtin/deep-review.js'
 import { loadAllSkills } from './skills/fs-loader.js'
 import { loadSettings, describeSettings, saveSetting, resetSettings } from './config/settings.js'
-import { makeGitDiffTool, makeGitLogTool, makeGitBranchTool, makeGitCommitTool, makeGitStatusTool, makeGitStashTool, makeGitWorktreeTool, makeGitFetchTool, makeGitPushTool, makeGitPullTool, makeGitMergeTool, makeGitRebaseTool, makeGitResetTool, makeGitRevertTool, makeGitBlameTool, makeGitTagTool, makeGitBisectTool } from './tools/git.js'
 import { CronStore } from './cron/store.js'
 import { CronScheduler } from './cron/scheduler.js'
-import { makeCronCreateTool, makeCronListTool, makeCronDeleteTool } from './cron/tool.js'
 import { formatApiError } from './model/retry.js'
 import { getFactory } from './model/factory.js'
 import { TaskStore } from './task/store.js'
-import { makeTaskCreateTool, makeTaskUpdateTool, makeTaskListTool } from './task/tool.js'
+import { registerGitTools, registerTaskTools, registerCronTools } from './cli/wiring.js'
 import {
   makeSystem,
   makeSubAgentSystem,
@@ -485,31 +483,13 @@ program
       }
       // 注册 remember 工具，让 agent 主动管理记忆
       session.registry.register(makeRememberTool(memoryStore))
-      // Git 工具
-      session.registry.register(makeGitDiffTool())
-      session.registry.register(makeGitLogTool())
-      session.registry.register(makeGitBranchTool())
-      // Git commit 用独立 shell policy 实例——避免「bash 不再询问」泄漏到 commit 确认
+      // Git 工具（17 个）。commit/push/pull/rebase/reset 用独立 shell 策略实例——
+      // 避免「bash 不再询问」泄漏到 commit 确认。
       const gitCommitShell = yolo ? allowAllShell : canPrompt ? makeInteractiveShell('git-commit ') : denyAllShell
-      session.registry.register(makeGitCommitTool(gitCommitShell))
-      session.registry.register(makeGitStatusTool())
-      session.registry.register(makeGitStashTool())
-      session.registry.register(makeGitWorktreeTool())
-      session.registry.register(makeGitFetchTool())
-      session.registry.register(makeGitPushTool(gitCommitShell))
-      session.registry.register(makeGitPullTool(gitCommitShell))
-      session.registry.register(makeGitMergeTool())
-      session.registry.register(makeGitRebaseTool(gitCommitShell))
-      session.registry.register(makeGitResetTool(gitCommitShell))
-      session.registry.register(makeGitRevertTool())
-      session.registry.register(makeGitBlameTool())
-      session.registry.register(makeGitTagTool())
-      session.registry.register(makeGitBisectTool())
+      registerGitTools(session.registry, gitCommitShell)
       // Task 系统
       const taskStore = new TaskStore(process.cwd())
-      session.registry.register(makeTaskCreateTool(taskStore))
-      session.registry.register(makeTaskUpdateTool(taskStore))
-      session.registry.register(makeTaskListTool(taskStore))
+      registerTaskTools(session.registry, taskStore)
       // Cron 定时任务
       const cronStore = new CronStore(resolve(process.cwd(), '.floom', 'cron.db'))
       const cronScheduler = new CronScheduler(cronStore, (entry) => {
@@ -517,9 +497,7 @@ program
         process.stderr.write(fmt.dim(`\n  ⏰ cron: ${entry.id} → "${entry.prompt.slice(0, 60)}"\n`))
       })
       cronScheduler.start()
-      session.registry.register(makeCronCreateTool(cronScheduler, cronStore))
-      session.registry.register(makeCronListTool(cronScheduler))
-      session.registry.register(makeCronDeleteTool(cronScheduler))
+      registerCronTools(session.registry, cronScheduler, cronStore)
       // 刷新 system 的函数现在还要拿记忆，用闭包保留 memoryStore 引用
       const origRefreshSystem = refreshSystem
       refreshSystem = () => {

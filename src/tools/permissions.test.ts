@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { resolve, join, sep } from 'node:path'
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import {
   allowAllPaths,
   confineToRoot,
@@ -44,6 +46,33 @@ describe('confineToRoot', () => {
     expect(policy.check('foo..bar/baz..qux.txt')).toBe(
       join(root, 'foo..bar', 'baz..qux.txt'),
     )
+  })
+})
+
+describe('confineToRoot symlink escape', () => {
+  it('blocks a symlink inside root that points outside root, but allows normal in-root paths', () => {
+    const base = mkdtempSync(join(tmpdir(), 'floom-perm-'))
+    try {
+      const root = join(base, 'project')
+      mkdirSync(root)
+      const outside = join(base, 'outside')
+      mkdirSync(outside)
+      writeFileSync(join(outside, 'secret.txt'), 'x')
+      const linkPath = join(root, 'link')
+      try {
+        // Windows 上目录用 junction 不需要管理员权限；其它平台用普通 dir 软链
+        symlinkSync(outside, linkPath, process.platform === 'win32' ? 'junction' : 'dir')
+      } catch {
+        return // 无权限创建软链（如 Windows 非开发者模式）→ 跳过该用例
+      }
+      const policy = confineToRoot(root)
+      // 经项目内软链访问项目外文件 → 拦截
+      expect(() => policy.check('link/secret.txt')).toThrow(/outside the project root/)
+      // 普通项目内路径（即便尚不存在）→ 放行
+      expect(() => policy.check('src/a.ts')).not.toThrow()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })
 

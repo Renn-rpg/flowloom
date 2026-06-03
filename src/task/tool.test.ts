@@ -1,20 +1,24 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdirSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { describe, it, expect, afterAll } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { TaskStore } from './store.js'
 import { makeTaskCreateTool, makeTaskUpdateTool, makeTaskListTool } from './tool.js'
 
-let tmpDir: string
-let counter = 0
+// 每次 makeStore 一个独立的系统临时目录（保持调用间隔离），全部在 afterAll 清理——
+// 不在仓库工作树里留 .floom-test-* 产物。
+const createdDirs: string[] = []
 
 function makeStore(): TaskStore {
-  const dir = resolve(process.cwd(), `.floom-test-task-tools-${counter++}`)
-  mkdirSync(dir, { recursive: true })
+  const dir = mkdtempSync(join(tmpdir(), 'floom-task-tools-'))
+  createdDirs.push(dir)
   return new TaskStore(dir)
 }
 
-beforeEach(() => {
-  tmpDir = resolve(process.cwd(), `.floom-test-task-tools-${counter++}`)
+afterAll(() => {
+  for (const d of createdDirs) {
+    try { rmSync(d, { recursive: true, force: true }) } catch { /* ok */ }
+  }
 })
 
 function extractId(result: string): string {

@@ -1,4 +1,5 @@
-import { resolve, isAbsolute, relative, sep } from 'node:path'
+import { resolve, isAbsolute, relative, sep, dirname, basename } from 'node:path'
+import { realpathSync } from 'node:fs'
 
 // ── 路径策略 ──────────────────────────────────────────────────────────────
 // 决定文件类工具（read/write/edit）能访问哪些路径。校验通过返回归一化后的
@@ -18,8 +19,29 @@ export const allowAllPaths: PathPolicy = {
 //   - 绝对路径若落在 root 外被挡住；落在 root 内则放行
 //   - Windows 跨盘符（relative 返回绝对路径）也被 isAbsolute(rel) 兜住
 //   - Windows 盘符大小写不敏感：统一 lowercase 后再比较
+// 解析路径中「最近的已存在祖先」的真实路径（跟随软链/Windows junction），再拼回尚不存在的尾部。
+// 仅用 resolve 不会跟随软链——这是为了识破「项目内软链指向项目外」的逃逸（如 root/link -> /etc）。
+function realpathOfExistingPrefix(abs: string): string {
+  const tail: string[] = []
+  let cur = abs
+  for (;;) {
+    try {
+      const real = realpathSync.native(cur)
+      return tail.length ? resolve(real, ...tail) : real
+    } catch {
+      const parent = dirname(cur)
+      if (parent === cur) return abs // 一路到根都解析不了（异常环境）→ 退回逻辑路径
+      tail.unshift(basename(cur))
+      cur = parent
+    }
+  }
+}
+
 export function confineToRoot(root: string): PathPolicy {
   const absRoot = resolve(root)
+  // 真实根：root 通常存在（= cwd）；解析失败（如单测里的虚构 root）则退回字符串路径，保持原行为。
+  let realRoot: string
+  try { realRoot = realpathSync.native(absRoot) } catch { realRoot = absRoot }
   return {
     check(p: string): string {
       const abs = isAbsolute(p) ? resolve(p) : resolve(absRoot, p)
@@ -28,7 +50,11 @@ export function confineToRoot(root: string): PathPolicy {
       const escapes = rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)
       // Windows 额外：盘符大小写不敏感——若 lowercased 路径相同但 startsWith 失败说明大小写欺骗
       const win32Spoof = process.platform === 'win32' && abs.toLowerCase() === absRoot.toLowerCase() && !abs.startsWith(absRoot)
-      if (escapes || win32Spoof) {
+      // 软链逃逸：对「最近已存在祖先」取真实路径再判一次，挡住项目内软链/junction 指向项目外的情形。
+      const real = realpathOfExistingPrefix(abs)
+      const realRel = relative(realRoot, real)
+      const realEscapes = realRel === '..' || realRel.startsWith('..' + sep) || isAbsolute(realRel)
+      if (escapes || win32Spoof || realEscapes) {
         throw new Error(
           `Path "${p}" is outside the project root (${absRoot}); ` +
             `only files within the project are allowed (re-run with --yolo to bypass).`,
@@ -109,7 +135,7 @@ export const denyAllShell: ShellPolicy = {
 // 日志轮转：保留最近 1000 行。
 
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+// dirname/resolve 已在文件顶部从 'node:path' 导入
 
 const MAX_LOG_LINES = 1000
 

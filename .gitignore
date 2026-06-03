@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .floom/
+.floom-test-*/
 tmp_probe/
 _vmprobe/
 vmtest/

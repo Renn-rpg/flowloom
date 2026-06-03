@@ -49,13 +49,20 @@ export class DeepSeekClient implements ModelClient {
       const resp = await withRetry(() => create({ stream: false }), { maxRetries: this.maxRetries })
       return fromOpenAIResponse(resp)
     }
-    // 流式请求：AbortController 双重超时保护（连接 + 流消费阶段）
+    // 流式请求：AbortController「空闲超时」——连接阶段与相邻 chunk 之间最多等 timeoutMs。
+    // 收到任何数据就重置计时：稳定的长输出不会被「总时长」上限误杀，只有真正卡住(无数据)才中断。
     const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), this.timeoutMs)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const resetIdle = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => ac.abort(), this.timeoutMs)
+    }
+    resetIdle() // 覆盖连接阶段
     try {
       const stream: any = await create({ stream: true, stream_options: { include_usage: true }, signal: ac.signal })
       const acc = new StreamAccumulator()
       for await (const chunk of stream) {
+        resetIdle() // 收到数据 → 续命
         const { text, reasoning } = acc.addChunk(chunk)
         if (text) opts.onText?.(text)
         if (reasoning) opts.onReasoning?.(reasoning)

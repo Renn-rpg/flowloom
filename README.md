@@ -11,6 +11,8 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
+> 🌐 English → this document ｜ **中文** → [README.zh-CN.md](README.zh-CN.md)
+
 DeepSeek FlowLoom (`floom`) is a terminal-based coding agent purpose-built for the **DeepSeek API**. It reads, writes, edits files, runs shell commands, and orchestrates **multi-agent workflows** — all from your terminal. Think of it as Claude Code, but native to DeepSeek and fully open source.
 
 ```
@@ -340,7 +342,7 @@ npm run probe      # Tool-calling reliability probe (needs API key)
 | Phase 8 | ✅ | [Plan Mode](docs/plan-mode.md): read-only research → `exit_plan_mode` proposes a plan → approve to unlock edits (`/plan` or `--plan`) |
 | Phase 9 | ✅ | [Background tasks](docs/background-tasks.md): `run_shell background:true` + `bash_output` / `kill_shell` for servers/watchers/builds |
 | Phase 10 | ✅ | [Context compaction](docs/compaction.md): over-budget history is summarized into a synopsis (auto, silent, falls back to trim) instead of dropped; manual `/compact` |
-| Phase 11 | ✅ | All 58 improvement items — sandbox hardening, test coverage, CLI splitting, streaming timeout, circuit breaker, session persistence, MCP reconnect, Markdown rendering, syntax highlighting, command history, unified diff, config hot-reload, first-run wizard, sub-agent progress tree, /retry, turn separators, project detection, and more. |
+| Phase 11 | ✅ | Hardening & UX items — sandbox hardening, test coverage, CLI splitting, streaming timeout, circuit breaker, session persistence, MCP reconnect, command history, word-level unified diff, config hot-reload, first-run wizard, sub-agent progress tree, /retry, turn separators, project detection, and more. |
 
 ---
 

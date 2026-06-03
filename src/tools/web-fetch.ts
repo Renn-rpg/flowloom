@@ -1,4 +1,6 @@
 import type { Tool } from './types.js'
+import { lookup as dnsLookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
 
 const TIMEOUT_MS = Number(process.env.FLOOM_FETCH_TIMEOUT_MS) || 15_000
 const MAX_OUT = 50_000 // 返回给模型的最大字符数
@@ -95,6 +97,64 @@ export function isPrivateHost(hostname: string): boolean {
   return false // 普通域名放行
 }
 
+// 把主机名解析成真实 IP 列表（注入便于测试）。DNS 重绑定防护：只校验主机名字符串不够，
+// 一个普通域名可以解析到内网/环回 IP（如 evil.com → 127.0.0.1）绕过 isPrivateHost。
+export type HostLookup = (hostname: string) => Promise<string[]>
+
+const defaultLookup: HostLookup = async (hostname) => {
+  const records = await dnsLookup(hostname, { all: true, verbatim: true })
+  return records.map((r) => r.address)
+}
+
+// 对「域名」做解析后 IP 校验（IP 字面量已被 parseUrl/isPrivateHost 同步拦过，跳过）。
+// 返回 null = 放行，否则返回错误原因。解析失败按「失败关闭」处理（拦截）。
+// 注：解析与实际连接之间仍有 TOCTOU 窗口（攻击者可在校验后翻转 DNS）；彻底消除需把连接钉死到
+// 已校验的 IP（自定义 dispatcher），此处先封堵最常见的「域名直接指向内网」情形。
+export async function assertHostPublic(
+  hostname: string,
+  allowPrivate: boolean,
+  lookup: HostLookup,
+): Promise<string | null> {
+  if (allowPrivate) return null
+  const bare = hostname.replace(/^\[|\]$/g, '')
+  if (isIP(bare) !== 0) return null // 纯 IP 字面量：isPrivateHost 已校验过
+  let addrs: string[]
+  try {
+    addrs = await lookup(hostname)
+  } catch {
+    return `cannot resolve host "${hostname}"`
+  }
+  for (const ip of addrs) {
+    if (isPrivateHost(ip)) return `host "${hostname}" resolves to a private/loopback address (${ip})`
+  }
+  return null
+}
+
+// 读取响应体并按字节上限截断：缺失 content-length 时仍能防超大响应耗尽内存。
+// 返回 null = 超过 maxBytes。无 ReadableStream（如单测 mock）时回退到 text()。
+export async function readCapped(res: Response, maxBytes: number): Promise<string | null> {
+  const body = (res as unknown as { body?: ReadableStream<Uint8Array> }).body
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader()
+    const chunks: Buffer[] = []
+    let total = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        total += value.byteLength
+        if (total > maxBytes) {
+          try { await reader.cancel() } catch { /* ignore */ }
+          return null
+        }
+        chunks.push(Buffer.from(value))
+      }
+    }
+    return Buffer.concat(chunks).toString('utf8')
+  }
+  return res.text()
+}
+
 export function parseUrl(
   raw: string,
   allowPrivate: boolean,
@@ -135,10 +195,11 @@ export function htmlToText(html: string): string {
 }
 
 export function makeWebFetchTool(
-  opts: { allowPrivate?: boolean; fetchImpl?: typeof globalThis.fetch } = {},
+  opts: { allowPrivate?: boolean; fetchImpl?: typeof globalThis.fetch; lookupImpl?: HostLookup } = {},
 ): Tool {
   const allowPrivate = opts.allowPrivate ?? false
   const doFetch = opts.fetchImpl ?? globalThis.fetch
+  const lookup = opts.lookupImpl ?? defaultLookup
   return {
     spec: {
       name: 'web_fetch',
@@ -159,13 +220,17 @@ export function makeWebFetchTool(
       const cached = cacheGet(first.url.href)
       if (cached) return cached
 
+      // DNS 重绑定防护：对首个目标做解析后 IP 校验
+      const hostErr = await assertHostPublic(first.url.hostname, allowPrivate, lookup)
+      if (hostErr) return `ERROR: ${hostErr}: ${raw}`
+
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
       try {
-        let url = first.url.href
+        let url = first.url
         let res: Response | undefined
         for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-          res = await doFetch(url, {
+          res = await doFetch(url.href, {
             redirect: 'manual',
             signal: controller.signal,
             headers: { 'user-agent': UA },
@@ -173,10 +238,12 @@ export function makeWebFetchTool(
           if (res.status >= 300 && res.status < 400) {
             const loc = res.headers.get('location')
             if (!loc) break
-            // 每一跳都重新做 SSRF 校验，防止重定向绕过
-            const next = parseUrl(new URL(loc, url).href, allowPrivate)
+            // 每一跳都重新做 SSRF 字符串校验 + 解析后 IP 校验，防止重定向绕过
+            const next = parseUrl(new URL(loc, url.href).href, allowPrivate)
             if ('error' in next) return `ERROR: blocked redirect (${next.error}): ${loc}`
-            url = next.url.href
+            const nextHostErr = await assertHostPublic(next.url.hostname, allowPrivate, lookup)
+            if (nextHostErr) return `ERROR: blocked redirect (${nextHostErr}): ${loc}`
+            url = next.url
             continue
           }
           break
@@ -189,7 +256,9 @@ export function makeWebFetchTool(
         const clen = Number(res.headers.get('content-length') ?? 0)
         if (clen && clen > MAX_BYTES) return `ERROR: response too large (${clen} bytes): ${raw}`
 
-        const body = await res.text()
+        // 读取响应体并按字节上限截断（缺失 content-length 时仍受保护，防内存膨胀）
+        const body = await readCapped(res, MAX_BYTES)
+        if (body === null) return `ERROR: response too large (exceeds ${MAX_BYTES} bytes): ${raw}`
         let text: string
         if (ct.includes('html')) text = htmlToText(body)
         else if (ct === '' || ct.includes('json') || ct.includes('text') || ct.includes('xml')) text = body

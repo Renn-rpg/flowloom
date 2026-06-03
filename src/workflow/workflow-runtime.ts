@@ -42,16 +42,22 @@ export async function executeWorkflow(
       `[usage] all-cached live=0 cached=${priorRun.calls.length}\n`,
     )
     journal.close()
+    // 用量从 per-call 记录（agent_calls 表）求和：runs 表的 total_* 列在 closeRun 时
+    // 不会被回写（始终为 openRun 时写入的 0），故以逐调用记录为单一可信源。
+    const usage = priorRun.calls.reduce(
+      (u, c) => ({
+        inputTokens: u.inputTokens + c.inputTokens,
+        outputTokens: u.outputTokens + c.outputTokens,
+        cacheHitTokens: u.cacheHitTokens + c.cacheHitTokens,
+      }),
+      { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 },
+    )
     return {
       runId: priorRun.run.runId,
       status: 'done',
       cachedCalls: priorRun.calls.length,
       liveCalls: 0,
-      usage: {
-        inputTokens: priorRun.run.totalInputTokens,
-        outputTokens: priorRun.run.totalOutputTokens,
-        cacheHitTokens: priorRun.run.totalCacheHitTokens,
-      },
+      usage,
       result: lastOutput,
     }
   }
