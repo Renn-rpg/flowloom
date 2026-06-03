@@ -4,6 +4,13 @@ import type { InternalMessage } from '../protocol/types.js'
 import { trimMessages, estimateTokens } from './context.js'
 import { compactMessages } from './compaction.js'
 
+// 「已中断」错误（用户 ESC 打断本轮）。name=AbortError 便于上层识别。
+function makeAbortError(): Error {
+  const e = new Error('turn aborted by user')
+  e.name = 'AbortError'
+  return e
+}
+
 // 工具执行闸：返回是否放行 + 拒绝说明。模型/UI 无关——hooks 评估与"ask"交互都在 cli 里实现，
 // loop 只看一个布尔结果。缺省（undefined）= 一律放行。
 export type ToolGate = (
@@ -81,6 +88,7 @@ export async function runTurn(
   s: AgentSession,
   userText: string,
   cbs?: RunTurnCallbacks | ((d: string) => void),
+  opts?: { signal?: AbortSignal },
 ): Promise<string> {
   // 向后兼容：如果第三个参数是函数，视为 onText
   const callbacks: RunTurnCallbacks =
@@ -88,6 +96,8 @@ export async function runTurn(
 
   s.messages.push({ role: 'user', text: userText })
   for (let iter = 0; iter < s.maxIters; iter++) {
+    // 用户中断(如 ESC):在每轮迭代起点(工具执行后/下一次 generate 前)尽早退出。
+    if (opts?.signal?.aborted) throw makeAbortError()
     callbacks.onThinking?.()
 
     // 保存快照：若 generate 异常，恢复消息数组以避免工具结果孤儿
@@ -168,7 +178,7 @@ export async function runTurn(
           model: s.model,
           maxTokens: s.maxTokens,
         },
-        { onText: callbacks.onText, onReasoning: callbacks.onReasoning },
+        { onText: callbacks.onText, onReasoning: callbacks.onReasoning, signal: opts?.signal },
       )
     } catch (e) {
       // generate 异常时恢复消息数组到本轮开始前，避免工具结果孤儿导致后续 API 400

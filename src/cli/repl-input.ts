@@ -325,6 +325,37 @@ export class ReplReader {
     this.rl = null
   }
 
+  // 模型输出期间监听中断键:接管 stdin(raw + resume),只识别 ESC(打断本轮)与 Ctrl-C(退出),
+  // 吞掉其余输入(避免流式时杂键回显/排队)。返回 disarm() 原样恢复 stdin 状态。非 TTY 返回空函数。
+  // 与 questionTTY 用同一套「保存→接管→恢复」手法,确保不与行编辑器的 stdin 接管冲突。
+  watchInterrupt(handlers: { onEsc: () => void; onCtrlC: () => void }): () => void {
+    const input = this.input
+    if (!input.isTTY) return () => {}
+    const prevData = input.listeners('data') as ((c: Buffer) => void)[]
+    const wasRaw = input.isRaw ?? false
+    const wasPaused = input.isPaused()
+    input.removeAllListeners('data')
+    const onData = (chunk: Buffer) => {
+      // 单字节 ESC → 打断本轮(方向键等转义序列是多字节,不会误触)
+      if (chunk.length === 1 && chunk[0] === 0x1b) { handlers.onEsc(); return }
+      // Ctrl-C(0x03):raw 模式下不会自动产生 SIGINT,这里手动转交退出逻辑
+      if (chunk.includes(0x03)) { handlers.onCtrlC(); return }
+      // 其余输入在模型输出期一律忽略
+    }
+    input.setRawMode?.(true)
+    input.resume()
+    input.on('data', onData)
+    let disarmed = false
+    return () => {
+      if (disarmed) return
+      disarmed = true
+      input.removeListener('data', onData)
+      input.setRawMode?.(wasRaw)
+      for (const l of prevData) input.on('data', l)
+      if (wasPaused) input.pause()
+    }
+  }
+
   // 从文件加载历史（JSONL 格式，每行一条命令）
   loadHistory(path: string): void {
     try {

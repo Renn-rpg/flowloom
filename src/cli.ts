@@ -127,12 +127,30 @@ async function runTurnWithUI(
   task: string,
   write: (d: string) => void,
   ui: UiState,
+  // 中断装置（REPL+TTY 才传）：注册中断回调,返回 disarm()。模型输出期接管 stdin 监听 ESC/Ctrl-C。
+  armInterrupt?: (onInterrupt: (kind: 'esc' | 'ctrl-c') => void) => () => void,
 ) {
   const startTime = Date.now()
-  // 模型输出期间：隐藏光标，暂停 stdin 防止 Enter 干扰
+  // 模型输出期间：隐藏光标。可中断模式下接管 stdin 监听 ESC(打断本轮)/Ctrl-C(退出);
+  // 否则(一次性/管道)简单暂停 stdin 防 Enter 干扰。
   process.stderr.write('\x1b[?25l')
+  const turnAbort = new AbortController()
+  let interrupted = false
   const wasPaused = process.stdin.isPaused()
-  process.stdin.pause() // 暂停 data 事件，不接收任何输入
+  let disarmInterrupt: (() => void) | null = null
+  if (armInterrupt) {
+    disarmInterrupt = armInterrupt((kind) => {
+      if (kind === 'esc') { interrupted = true; turnAbort.abort() }
+      else {
+        // Ctrl-C:raw 模式下不会自动触发 SIGINT。先 disarm 恢复 stdin(raw/echo),避免 process.exit
+        // 后终端残留 raw 模式;再转交既有退出处理器(cleanup + exit)。
+        if (disarmInterrupt) disarmInterrupt()
+        ;(process.emit as (event: string, ...args: unknown[]) => boolean)('SIGINT')
+      }
+    })
+  } else {
+    process.stdin.pause() // 暂停 data 事件，不接收任何输入
+  }
   let totalTools = 0
   // 本轮全部思考链（跨多轮 generate 累计）；turn 结束写入 ui.lastReasoning 供 ctrl+o 展开。
   let reasoningBuf = ''
@@ -304,13 +322,27 @@ async function runTurnWithUI(
         }
         pendingDiff = null
       },
-    })
+    }, { signal: turnAbort.signal })
+  } catch (e) {
+    // 用户 ESC 打断:吞掉中断错误,走「已中断」收尾;其它错误照常上抛给 REPL 处理。
+    if (turnAbort.signal.aborted) interrupted = true
+    else throw e
   } finally {
     flushMd() // 任何退出路径(含异常中断)都 flush 已缓冲的 Markdown 行,避免丢字
     stopThinking()
     stopBlinking()
     ui.lastReasoning = reasoningBuf
-    if (!wasPaused) process.stdin.resume() // 恢复 REPL 输入
+    if (disarmInterrupt) disarmInterrupt() // 恢复 stdin 原状态(raw/listeners/paused)
+    else if (!wasPaused) process.stdin.resume() // 恢复 REPL 输入
+  }
+
+  if (interrupted) {
+    process.stderr.write(fmt.yellow('\n  ⎋ interrupted\n'))
+    if (ui.hasRepl) process.stderr.write('\x1b[?25h') // 恢复光标给 REPL
+    // 弹出本次未应答的 user 消息,保持历史一致(与出错路径一致)
+    const last = session.messages[session.messages.length - 1]
+    if (last?.role === 'user') session.messages.pop()
+    return
   }
 
   if (streaming) {
@@ -464,6 +496,12 @@ program
       if (reader) {
         reader.loadHistory(resolve(homedir(), '.floom', 'history.json'))
       }
+
+      // 中断装置:仅在 REPL + TTY 时启用。模型输出期接管 stdin,ESC 打断本轮、Ctrl-C 退出。
+      const armInterrupt: ((onInterrupt: (kind: 'esc' | 'ctrl-c') => void) => () => void) | undefined =
+        reader && process.stdin.isTTY
+          ? (onInterrupt) => reader.watchInterrupt({ onEsc: () => onInterrupt('esc'), onCtrlC: () => onInterrupt('ctrl-c') })
+          : undefined
 
       // 默认：文件工具限定在当前工作目录内；敏感文件防护始终生效（--yolo 不绕过）。
       const confined: PathPolicy = yolo ? allowAllPaths : confineToRoot(process.cwd())
@@ -929,7 +967,7 @@ program
                   }
                   session.system = prompt
                   try {
-                    await runTurnWithUI(session, `${line}`, write, ui)
+                    await runTurnWithUI(session, `${line}`, write, ui, armInterrupt)
                   } catch (e) {
                     process.stderr.write(fmt.red(`\n  ✗ ${formatApiError(e)}\n`))
                   }
@@ -997,7 +1035,7 @@ program
           try {
             turnNum++
             if (turnNum > 1) process.stderr.write(fmt.dim(`\n  ── turn ${turnNum} ──\n`))
-            await runTurnWithUI(session, line, write, ui)
+            await runTurnWithUI(session, line, write, ui, armInterrupt)
             if (!title) title = line.slice(0, 60)
             retryLine = line // 仅成功时保存
           } catch (e) {

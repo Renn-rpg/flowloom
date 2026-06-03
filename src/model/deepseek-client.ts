@@ -5,6 +5,13 @@ import { toOpenAIRequest } from '../protocol/to-openai.js'
 import { fromOpenAIResponse, StreamAccumulator } from '../protocol/from-openai.js'
 import { withRetry } from './retry.js'
 
+// 统一的「已中断」错误（name=AbortError,便于上层识别;但 cli 主要靠自己的 AbortController.signal.aborted 判定）。
+function makeAbortError(): Error {
+  const e = new Error('request aborted')
+  e.name = 'AbortError'
+  return e
+}
+
 export interface DeepSeekClientOptions {
   model: string
   apiKey?: string
@@ -41,17 +48,22 @@ export class DeepSeekClient implements ModelClient {
       })
   }
   async generate(req: GenerateRequest, opts?: GenerateOptions): Promise<GenerateResult> {
+    // 外部中断:进入即检查,已 aborted 直接抛(如 ESC 在工具执行期触发,下一轮 generate 立即退出)。
+    if (opts?.signal?.aborted) throw makeAbortError()
     const body = toOpenAIRequest({ ...req, model: this.model })
     const create = (extra: Record<string, unknown>) =>
       this.openai.chat.completions.create({ ...(body as any), ...extra }, { timeout: this.timeoutMs })
     // 仅当调用方要看流式文本/思考链时才走 stream 分支
     if (!opts?.onText && !opts?.onReasoning) {
-      const resp = await withRetry(() => create({ stream: false }), { maxRetries: this.maxRetries })
+      const resp = await withRetry(() => create({ stream: false, signal: opts?.signal }), { maxRetries: this.maxRetries })
       return fromOpenAIResponse(resp)
     }
     // 流式请求：AbortController「空闲超时」——连接阶段与相邻 chunk 之间最多等 timeoutMs。
     // 收到任何数据就重置计时：稳定的长输出不会被「总时长」上限误杀，只有真正卡住(无数据)才中断。
     const ac = new AbortController()
+    // 外部信号(ESC 打断)联动:外部 abort → 同时 abort 内部 controller,立即中断流。
+    const onExternalAbort = () => ac.abort()
+    opts?.signal?.addEventListener('abort', onExternalAbort, { once: true })
     let timer: ReturnType<typeof setTimeout> | undefined
     const resetIdle = () => {
       clearTimeout(timer)
@@ -70,6 +82,7 @@ export class DeepSeekClient implements ModelClient {
       return acc.result()
     } finally {
       clearTimeout(timer)
+      opts?.signal?.removeEventListener('abort', onExternalAbort)
     }
   }
 }

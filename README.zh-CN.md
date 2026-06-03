@@ -113,6 +113,10 @@ floom run audit.mjs --budget 500000
 
 **DSL 原语**:`agent` / `parallel` / `pipeline` / `phase` / `log` / `budget` / `workflow`(支持嵌套子工作流)。
 
+### ⚡ 流式与交互体验
+
+实时逐 token 流式输出。最终答案在终端按 **Markdown 渲染**(标题/列表/引用/强调),代码块带**语法高亮**。响应过程中随时按 **`ESC`** 即可中止本轮、退回提示符;`Ctrl-O` 展开折叠的细节。
+
 ### 💾 确定性 Resume
 
 工作流运行会落盘到 SQLite。**相同脚本 + 相同参数 = 100% 命中缓存**:

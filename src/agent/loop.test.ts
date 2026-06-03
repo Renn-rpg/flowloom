@@ -234,4 +234,48 @@ describe('runTurn', () => {
     expect(s.messages[0].text).toBe(big + '_3') // 仅保留最新一轮
     expect(s.messages.find((m) => m.text === big + '_2')).toBeUndefined()
   })
+
+  // ——— 用户中断(ESC):AbortSignal 透传 ———
+
+  it('throws immediately when the signal is already aborted, without calling the model', async () => {
+    const generate = vi.fn(async () => r({ text: 'should not run' }))
+    const s = createSession({ client: { generate }, registry: new ToolRegistry(), system: 'sys', model: 'm', maxTokens: 100 })
+    const ac = new AbortController()
+    ac.abort()
+    await expect(runTurn(s, 'hi', {}, { signal: ac.signal })).rejects.toThrow(/abort/i)
+    expect(generate).not.toHaveBeenCalled()
+  })
+
+  it('forwards the abort signal to client.generate', async () => {
+    let seenSignal: AbortSignal | undefined
+    const client: ModelClient = {
+      generate: async (_req, opts) => { seenSignal = opts?.signal; return r({ text: 'ok' }) },
+    }
+    const s = createSession({ client, registry: new ToolRegistry(), system: 'sys', model: 'm', maxTokens: 100 })
+    const ac = new AbortController()
+    await runTurn(s, 'hi', {}, { signal: ac.signal })
+    expect(seenSignal).toBe(ac.signal)
+  })
+
+  it('restores messages to a consistent state when generate aborts mid-turn (no orphan assistant)', async () => {
+    const client: ModelClient = {
+      generate: async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError' }) },
+    }
+    const s = createSession({ client, registry: new ToolRegistry(), system: 'sys', model: 'm', maxTokens: 100 })
+    const ac = new AbortController()
+    await expect(runTurn(s, 'hi', {}, { signal: ac.signal })).rejects.toThrow(/abort/i)
+    // generate 抛错 → 还原到本轮起点快照(仅含刚 push 的 user 消息),不留半截 assistant/tool
+    expect(s.messages.map((m) => m.role)).toEqual(['user'])
+  })
+
+  it('aborts before the next generate when the signal fires during tool execution', async () => {
+    const reg = new ToolRegistry()
+    const ac = new AbortController()
+    // 工具执行时触发中断 → 下一轮迭代起点应立即抛错,不再调用 generate 第二次
+    reg.register({ spec: { name: 'slow', description: '', inputSchema: { type: 'object', properties: {} } }, handler: async () => { ac.abort(); return 'done' } })
+    const generate = vi.fn(async () => r({ toolCalls: [{ id: 'c1', name: 'slow', input: {} }], stopReason: 'tool_use' }))
+    const s = createSession({ client: { generate }, registry: reg, system: 'sys', model: 'm', maxTokens: 100 })
+    await expect(runTurn(s, 'go', {}, { signal: ac.signal })).rejects.toThrow(/abort/i)
+    expect(generate).toHaveBeenCalledTimes(1) // 仅第一轮 generate,中断后不再发起第二轮
+  })
 })

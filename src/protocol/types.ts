@@ -44,4 +44,6 @@ export interface GenerateOptions {
   onText?: (delta: string) => void
   // 思考链增量（推理模型流式时逐块回吐）。普通模型永不触发。
   onReasoning?: (delta: string) => void
+  // 外部中断信号（如用户在 REPL 里按 ESC 打断本轮）。aborted 时 generate 应尽快抛错退出。
+  signal?: AbortSignal
 }
