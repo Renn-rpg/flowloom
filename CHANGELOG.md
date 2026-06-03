@@ -2,6 +2,10 @@
 
 ## [Unreleased] — review & hardening pass
 
+### Features
+- **流式 Markdown 渲染**(`src/cli/markdown.ts`):REPL + TTY 下把最终答案按 Markdown 渲染(标题/有序无序列表/引用/分隔线/粗体/斜体/行内 code/链接/删除线)。行缓冲流式;一次性/管道输出保持裸文本不污染
+- **代码块语法高亮**(`src/cli/highlight.ts`):手写 mini-lexer(无第三方依赖),按围栏语言对注释/字符串/数字/关键字/字面量上色,支持 JS/TS/Python/Go/Rust/C 家族/JSON 等;跨行 `/* */` 块注释用小状态跟踪。`tokenizeLine` 与颜色解耦、保证拼回原行
+
 ### Security
 - **web_fetch DNS-rebinding 防护**:对域名做解析后 IP 校验(`assertHostPublic`),拦截解析到内网/环回地址的域名;重定向每一跳同样校验
 - **web_fetch 响应体大小上限**:流式读取并按 `MAX_BYTES` 截断,缺失 `content-length` 的超大响应不再耗尽内存(`readCapped`)
@@ -13,13 +17,13 @@
 
 ### CLI/UX & Docs
 - system prompt 补全工具清单:加入 `web_search` 并提示存在 git/task/remember/cron 工具家族(此前模型对它们「隐身」)
-- 修正 README Phase 11 虚标(此前声称的 Markdown 渲染 / 语法高亮尚未实现)
+- 修正 README Phase 11 虚标(Markdown 渲染 + 代码语法高亮本次均已补齐)
 - 新增中文文档 `README.zh-CN.md`,与英文 README 互链
 
 ### Refactor / Tests
 - 抽出 `src/cli/wiring.ts`(`registerGitTools` / `registerTaskTools` / `registerCronTools`),为 1100+ 行的 `cli.ts` 入口瘦身
 - task 单测改用 `os.tmpdir()` + `mkdtemp` + 清理,不再在仓库工作树留 `.floom-test-*` 产物;`.gitignore` 加防御行
-- 测试数 506 → 511(新增软链逃逸、DNS 重绑定、响应体上限等用例)
+- 测试数 506 → 538(新增软链逃逸、DNS 重绑定、响应体上限、Markdown 渲染、语法高亮等用例)
 
 ## [0.10.0] — Unreleased
 

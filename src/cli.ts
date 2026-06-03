@@ -42,6 +42,7 @@ import { createSpinner, stopActiveSpinner, stopBlinking } from './cli/spinner.js
 import { fmt } from './cli/format.js'
 import { showWelcome } from './cli/welcome.js'
 import { renderDiff } from './cli/diff.js'
+import { createMarkdownStream, type MarkdownStream } from './cli/markdown.js'
 import { createStatusBar, renderStatusBar } from './cli/status-bar.js'
 import { BlockManager } from './cli/blocks.js'
 import { MemoryStore } from './memory/store.js'
@@ -182,6 +183,12 @@ async function runTurnWithUI(
   let reasoningStreaming = false
   // —— diff：在工具执行前后读取文件内容做对比 ——
   let pendingDiff: { path: string; before: string } | null = null
+  // —— Markdown 渲染：仅在 REPL + TTY 时把最终答案当 Markdown 渲染（标题/列表/强调/代码块）。
+  // 一次性/管道模式（write 写 stdout，供程序消费）保持裸文本,不做结构变换。每个文本突发一个 stream，
+  // 被工具调用/turn 结束打断时 flush 残余行。
+  const useMarkdown = ui.hasRepl && Boolean(process.stderr.isTTY)
+  let md: MarkdownStream | null = null
+  const flushMd = () => { if (md) { md.end(); md = null } }
 
   try {
     await runTurn(session, task, {
@@ -212,12 +219,14 @@ async function runTurnWithUI(
           if (reasoningBuf.length > 0) {
             write(fmt.dim('\n  ── Response ──\n'))
           }
-          write('  ')
+          if (useMarkdown) md = createMarkdownStream({ write, prefix: '  ' })
+          else write('  ')
         }
-        // 换行后保持缩进
-        write(delta.replace(/\n/g, '\n  '))
+        if (md) md.push(delta)
+        else write(delta.replace(/\n/g, '\n  ')) // 非 Markdown 路径：换行后保持缩进
       },
       onThinking: () => {
+        flushMd() // 防御性：上一突发若未在工具调用处 flush，这里兜底
         streaming = false
         reasoningStreaming = false
         startThinking()
@@ -248,7 +257,7 @@ async function runTurnWithUI(
         )
       },
       onToolCall: (name, input) => {
-        if (streaming) { write('\n'); streaming = false }
+        if (streaming) { flushMd(); write('\n'); streaming = false }
         const args = input.path ? String(input.path).slice(-40)
           : input.command ? String(input.command).slice(0, 50)
           : input.pattern ? String(input.pattern).slice(0, 50)
@@ -297,13 +306,17 @@ async function runTurnWithUI(
       },
     })
   } finally {
+    flushMd() // 任何退出路径(含异常中断)都 flush 已缓冲的 Markdown 行,避免丢字
     stopThinking()
     stopBlinking()
     ui.lastReasoning = reasoningBuf
     if (!wasPaused) process.stdin.resume() // 恢复 REPL 输入
   }
 
-  if (streaming) write('\n') // 末轮流式文本收尾换行
+  if (streaming) {
+    flushMd() // md 路径:flush 最后一行(自带换行)
+    if (!useMarkdown) write('\n') // 非 md 路径:补末轮流式文本的收尾换行
+  }
 
   const elapsed = Date.now() - startTime
   const outTokens = session.usage.outputTokens
