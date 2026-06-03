@@ -1007,6 +1007,8 @@ program
             turnNum++
             if (turnNum > 1) process.stderr.write(fmt.dim(`\n  ── turn ${turnNum} ──\n`))
             await runTurnWithUI(session, line, write, ui)
+            if (!title) title = line.slice(0, 60)
+            retryLine = line // 仅成功时保存
           } catch (e) {
             process.stderr.write(fmt.red(`\n  ✗ ${(e as Error).message ?? String(e)}\n`))
             if (session.messages.length > 0) {
@@ -1016,8 +1018,6 @@ program
             }
           }
           process.stdout.write('\n')
-          if (!title) title = line.slice(0, 60)
-          retryLine = line // 保存以供 /retry
           persist()
           updateStatus()
         }
