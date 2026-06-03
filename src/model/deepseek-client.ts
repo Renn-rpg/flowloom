@@ -49,14 +49,20 @@ export class DeepSeekClient implements ModelClient {
       const resp = await withRetry(() => create({ stream: false }), { maxRetries: this.maxRetries })
       return fromOpenAIResponse(resp)
     }
-    // 流式请求不重试：已经消费了一半的 stream 重试会导致不一致。
-    const stream: any = await withRetry(() => create({ stream: true, stream_options: { include_usage: true } }), { maxRetries: 0 })
-    const acc = new StreamAccumulator()
-    for await (const chunk of stream) {
-      const { text, reasoning } = acc.addChunk(chunk)
-      if (text) opts.onText?.(text)
-      if (reasoning) opts.onReasoning?.(reasoning) // 推理模型才会触发
+    // 流式请求：AbortController 双重超时保护（连接 + 流消费阶段）
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), this.timeoutMs)
+    try {
+      const stream: any = await create({ stream: true, stream_options: { include_usage: true }, signal: ac.signal })
+      const acc = new StreamAccumulator()
+      for await (const chunk of stream) {
+        const { text, reasoning } = acc.addChunk(chunk)
+        if (text) opts.onText?.(text)
+        if (reasoning) opts.onReasoning?.(reasoning)
+      }
+      return acc.result()
+    } finally {
+      clearTimeout(timer)
     }
-    return acc.result()
   }
 }

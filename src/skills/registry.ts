@@ -2,11 +2,12 @@
 // 技能调用时复用 dispatch_agent 机制，注入专用 system prompt 和工具有限制。
 
 export interface Skill {
-  name: string         // slash 命令名（如 "code-review"）
-  description: string  // 一行描述
-  systemPrompt: string // 技能专用的 system prompt（注入到子 agent）
-  toolAllowlist?: string[] // 可选：只允许哪些工具（未设 = 全工具可用）
-  readOnly?: boolean   // 默认 false。true = 只读工具（适合 review 类技能）
+  name: string
+  description: string
+  systemPrompt: string
+  version?: string     // 从 frontmatter 读取的版本号（如 "1.2.0"）
+  toolAllowlist?: string[]
+  readOnly?: boolean
 }
 
 // 只读工具名集合（与 plan.ts 保持一致）

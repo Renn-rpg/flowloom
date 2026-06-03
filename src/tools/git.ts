@@ -20,6 +20,28 @@ function fmtOut(stdout: string, stderr: string): string {
   return out.slice(0, MAX_OUT) || '(no output)'
 }
 
+// 工厂：消除重复，数据驱动生成简单 Git 工具
+function makeSimpleGitTool(
+  name: string, desc: string,
+  argsFn: (i: Record<string, unknown>) => string[],
+  props?: Record<string, { type: string; description: string }>,
+  required?: string[],
+): Tool {
+  return {
+    spec: {
+      name,
+      description: desc,
+      inputSchema: { type: 'object', properties: props ?? {}, ...(required ? { required } : {}) },
+    },
+    handler: async (i) => {
+      try {
+        const { stdout, stderr } = await runGit(argsFn(i), process.cwd())
+        return fmtOut(stdout, stderr)
+      } catch (e: any) { return `ERROR: ${name} failed: ${e.message}` }
+    },
+  }
+}
+
 export function makeGitDiffTool(): Tool {
   return {
     spec: {
@@ -499,6 +521,59 @@ export function makeGitTagTool(): Tool {
         return fmtOut(stdout, stderr) || '(no tags)'
       } catch (e: any) {
         return `ERROR: git tag failed: ${e.message}`
+      }
+    },
+  }
+}
+
+export function makeGitBisectTool(): Tool {
+  return {
+    spec: {
+      name: 'git_bisect',
+      description:
+        'Use git bisect to find the commit that introduced a bug. ' +
+        'Steps: start with "good" and "bad" commits, then mark each test result with "good" or "bad" until the offending commit is found. ' +
+        'Use "reset" to abort an in-progress bisect.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', description: 'start | good | bad | skip | reset | log' },
+          good: { type: 'string', description: 'for "start": commit known to be good (e.g. HEAD~10)' },
+          bad: { type: 'string', description: 'for "start": commit known to be bad (e.g. HEAD)' },
+        },
+        required: ['action'],
+      },
+    },
+    handler: async (i) => {
+      try {
+        const action = String(i.action ?? '').trim()
+        const args = ['bisect']
+        switch (action) {
+          case 'start': {
+            if (!i.bad) return 'ERROR: git_bisect start requires "bad" commit'
+            args.push('start')
+            if (i.good) { args.push(String(i.good)); args.push(String(i.bad)) }
+            else args.push(String(i.bad))
+            break
+          }
+          case 'good':
+          case 'bad':
+          case 'skip':
+            args.push(action)
+            break
+          case 'reset':
+            args.push('reset')
+            break
+          case 'log':
+            args.push('log')
+            break
+          default:
+            return 'ERROR: unknown git_bisect action. Valid: start, good, bad, skip, reset, log.'
+        }
+        const { stdout, stderr } = await runGit(args, process.cwd())
+        return fmtOut(stdout, stderr)
+      } catch (e: any) {
+        return `ERROR: git bisect failed: ${e.message}`
       }
     },
   }

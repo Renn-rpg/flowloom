@@ -15,6 +15,8 @@ export class CircuitBreaker {
     private resetMs = 60_000,
   ) {}
 
+  get currentState(): 'closed' | 'open' | 'half-open' { return this.state }
+
   get isOpen(): boolean {
     if (this.state === 'open') {
       if (Date.now() - this.lastFailureTime > this.resetMs) {
@@ -61,9 +63,26 @@ export class ModelRouter implements ModelClient {
       const { client, name } = this.clients[i]
 
       // 主模型（index 0）受熔断器保护
-      if (i === 0 && this.breaker.isOpen) {
-        errors.push(`${name}: circuit breaker open`)
-        continue
+      if (i === 0) {
+        if (this.breaker.isOpen) {
+          errors.push(`${name}: circuit breaker open`)
+          continue
+        }
+        // 半开状态：发送轻量探测请求，成功才放行业务请求
+        if (this.breaker.currentState === 'half-open') {
+          if (!client.countTokens) {
+            errors.push(`${name}: circuit breaker half-open (no probe available)`)
+            continue
+          }
+          try {
+            await client.countTokens('ping')
+            this.breaker.recordSuccess()
+          } catch {
+            this.breaker.recordFailure()
+            errors.push(`${name}: circuit breaker probe failed`)
+            continue
+          }
+        }
       }
 
       try {

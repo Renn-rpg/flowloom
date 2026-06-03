@@ -16,8 +16,13 @@ export interface SlashContext {
   clearHistory(): number
   save(): boolean
   listSessions(): string
+  showSessionMenu?(): Promise<string>
   listMemories(): string
   getSettings(): string
+  saveSetting(key: string, value: string): string
+  resetSettings(): string
+  listCronJobs(): string
+  toggleStatus?(): boolean
 }
 
 export interface SlashResult {
@@ -27,7 +32,9 @@ export interface SlashResult {
   mutated?: boolean // 改了持久化状态（model/effort/clear），cli 据此落盘
   skill?: string // 技能名（如 'code-review'），cli 据此 dispatch 子 agent
   skillArgs?: string // 传给技能的参数（如 '/code-review --effort high' → '--effort high'）
-  compact?: boolean // 请求语义压缩历史（需模型调用，由 cli 在 runSlash 返回后异步执行）
+  compact?: boolean
+  retry?: boolean
+  interactiveSessions?: boolean // /sessions → 交互式会话管理
 }
 
 interface SlashSpec {
@@ -41,6 +48,7 @@ export const SLASH_COMMANDS: Record<string, SlashSpec> = {
   model: { usage: '/model [id]', desc: 'show or switch the model' },
   effort: { usage: '/effort [level]', desc: 'show or set reasoning effort (high/max → thinking model)' },
   plan: { usage: '/plan', desc: 'toggle plan mode (read-only; propose a plan before changes)' },
+  'plan revise': { usage: '/plan revise', desc: 'stay in plan mode but allow revising the current plan' },
   clear: { usage: '/clear', desc: 'clear conversation history (reset context)' },
   compact: { usage: '/compact', desc: 'summarize older history into a synopsis to free up context' },
   usage: { usage: '/usage', desc: 'show token usage this session' },
@@ -51,8 +59,18 @@ export const SLASH_COMMANDS: Record<string, SlashSpec> = {
   simplify: { usage: '/simplify', desc: 'review changes for reuse and simplification' },
   architect: { usage: '/architect', desc: 'analyze architecture and propose designs' },
   config: { usage: '/config', desc: 'show effective settings' },
+  cron: { usage: '/cron', desc: 'list scheduled cron jobs' },
+  status: { usage: '/status', desc: 'toggle the status bar on/off' },
+  retry: { usage: '/retry', desc: 'retry the last failed turn' },
   'deep-review': { usage: '/deep-review', desc: 'adversarial multi-agent code review (correctness + security)' },
   exit: { usage: '/exit', desc: 'quit floom' },
+}
+
+// 命令别名映射：缩短常用命令
+const COMMAND_ALIASES: Record<string, string> = {
+  fix: 'code-review',
+  test: 'code-review',  // /test → 建议模型跑测试+审查
+  pr: 'code-review',    // /pr → 审查变更
 }
 
 // 某些命令的合法参数枚举：用于交互式下拉的二级子菜单（选完命令再选参数）。
@@ -89,8 +107,10 @@ export function parseSlash(line: string): { name: string; arg: string } | null {
   if (!t.startsWith('/')) return null
   const body = t.slice(1)
   const sp = body.search(/\s/)
-  if (sp === -1) return { name: body.toLowerCase(), arg: '' }
-  return { name: body.slice(0, sp).toLowerCase(), arg: body.slice(sp + 1).trim() }
+  const rawName = sp === -1 ? body.toLowerCase() : body.slice(0, sp).toLowerCase()
+  const name = COMMAND_ALIASES[rawName] ?? rawName
+  const arg = sp === -1 ? '' : body.slice(sp + 1).trim()
+  return { name, arg }
 }
 
 export function runSlash(line: string, ctx: SlashContext): SlashResult {
@@ -116,9 +136,13 @@ export function runSlash(line: string, ctx: SlashContext): SlashResult {
       return { handled: true, output: ctx.applyEffort(arg), mutated: true }
     }
     case 'plan': {
+      if (arg === 'revise') {
+        if (!ctx.isPlanMode()) return { handled: true, output: 'Not in plan mode — nothing to revise.' }
+        return { handled: true, output: 'Plan mode still ON — revise your plan and call exit_plan_mode when ready.' }
+      }
       const want = !ctx.isPlanMode()
       ctx.setPlanMode(want)
-      const now = ctx.isPlanMode() // setPlanMode 可能拒绝（无可批准的 TTY）→ 据实汇报
+      const now = ctx.isPlanMode()
       if (want && !now) {
         return { handled: true, output: 'plan mode needs an interactive terminal — not available here' }
       }
@@ -146,11 +170,32 @@ export function runSlash(line: string, ctx: SlashContext): SlashResult {
     case 'save':
       return { handled: true, output: ctx.save() ? 'session saved' : 'save failed' }
     case 'sessions':
+      if (ctx.showSessionMenu) return { handled: true, interactiveSessions: true }
       return { handled: true, output: ctx.listSessions() }
     case 'memory':
       return { handled: true, output: ctx.listMemories() }
-    case 'config':
-      return { handled: true, output: ctx.getSettings() }
+    case 'config': {
+      if (!arg) return { handled: true, output: ctx.getSettings() }
+      const parts = arg.split(/\s+/)
+      if (parts[0] === 'set' && parts.length >= 3) {
+        return { handled: true, output: ctx.saveSetting(parts[1], parts.slice(2).join(' ')), mutated: true }
+      }
+      if (parts[0] === 'reload') {
+        return { handled: true, output: 'Settings reloaded (some changes require restart).', mutated: true }
+      }
+      if (parts[0] === 'reset') {
+        return { handled: true, output: ctx.resetSettings(), mutated: true }
+      }
+      return { handled: true, output: `Usage: /config [set <key> <value> | reload | reset]` }
+    }
+    case 'cron':
+      return { handled: true, output: ctx.listCronJobs() }
+    case 'status': {
+      const on = ctx.toggleStatus?.() ?? true
+      return { handled: true, output: on ? 'status bar ON' : 'status bar OFF' }
+    }
+    case 'retry':
+      return { handled: true, retry: true }
     case 'code-review':
     case 'simplify':
     case 'architect':

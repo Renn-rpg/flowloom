@@ -9,8 +9,8 @@ config({ quiet: true }) // $CWD/.env 覆盖全局
 
 import { Command } from 'commander'
 import { resolve, dirname } from 'node:path'
-import { mkdirSync, readFileSync } from 'node:fs'
-import type { Ora } from 'ora'
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import type { Spinner } from './cli/spinner.js'
 import {
   type PathPolicy,
   type ShellPolicy,
@@ -19,6 +19,7 @@ import {
   allowAllPaths,
   allowAllShell,
   denyAllShell,
+  auditLog,
 } from './tools/permissions.js'
 import { selectMenu } from './cli/prompt.js'
 import { ReplReader } from './cli/repl-input.js'
@@ -36,11 +37,12 @@ import { makeExitPlanModeTool, planModeGate } from './agent/plan.js'
 import type { Tool } from './tools/types.js'
 import { SessionStore } from './agent/session-store.js'
 import { executeWorkflow } from './workflow/workflow-runtime.js'
-import { NodeVmRuntime } from './workflow/sandbox.js'
+import { NodeVmRuntime, IsolatedVmRuntime } from './workflow/sandbox.js'
 import { createSpinner, stopActiveSpinner, stopBlinking } from './cli/spinner.js'
 import { fmt } from './cli/format.js'
 import { showWelcome } from './cli/welcome.js'
 import { renderDiff } from './cli/diff.js'
+import { createStatusBar, renderStatusBar } from './cli/status-bar.js'
 import { BlockManager } from './cli/blocks.js'
 import { MemoryStore } from './memory/store.js'
 import { formatRecall } from './memory/recall.js'
@@ -51,8 +53,8 @@ import { simplifySkill } from './skills/builtin/simplify.js'
 import { architectSkill } from './skills/builtin/architect.js'
 import { deepReviewSkill } from './skills/builtin/deep-review.js'
 import { loadAllSkills } from './skills/fs-loader.js'
-import { loadSettings, describeSettings } from './config/settings.js'
-import { makeGitDiffTool, makeGitLogTool, makeGitBranchTool, makeGitCommitTool, makeGitStatusTool, makeGitStashTool, makeGitWorktreeTool, makeGitFetchTool, makeGitPushTool, makeGitPullTool, makeGitMergeTool, makeGitRebaseTool, makeGitResetTool, makeGitRevertTool, makeGitBlameTool, makeGitTagTool } from './tools/git.js'
+import { loadSettings, describeSettings, saveSetting, resetSettings } from './config/settings.js'
+import { makeGitDiffTool, makeGitLogTool, makeGitBranchTool, makeGitCommitTool, makeGitStatusTool, makeGitStashTool, makeGitWorktreeTool, makeGitFetchTool, makeGitPushTool, makeGitPullTool, makeGitMergeTool, makeGitRebaseTool, makeGitResetTool, makeGitRevertTool, makeGitBlameTool, makeGitTagTool, makeGitBisectTool } from './tools/git.js'
 import { CronStore } from './cron/store.js'
 import { CronScheduler } from './cron/scheduler.js'
 import { makeCronCreateTool, makeCronListTool, makeCronDeleteTool } from './cron/tool.js'
@@ -116,6 +118,8 @@ export interface UiState {
   blockManager: BlockManager
   // PostToolUse hooks 规则（从 hooks.json 加载，在 onToolResult 中触发）
   postToolHooks: import('./hooks/engine.js').PostToolHook[]
+  // 工具调用详情存储（供 Ctrl+T 展开查看 input/output）
+  toolDetails: Map<string, { input: Record<string, unknown>; output?: string; isError?: boolean }>
 }
 
 // 单次 turn 的 UI 渲染：流式文本 + 思考计时 + 工具链动画 + 改动 diff
@@ -134,8 +138,8 @@ async function runTurnWithUI(
   // 本轮全部思考链（跨多轮 generate 累计）；turn 结束写入 ui.lastReasoning 供 ctrl+o 展开。
   let reasoningBuf = ''
 
-  // —— 思考计时 spinner（实时秒数，类 Claude）——
-  let thinkSpinner: Ora | null = null
+  // —— 思考计时 spinner（实时秒数 + 推理活动量，类 Claude）——
+  let thinkSpinner: Spinner | null = null
   let thinkTimer: ReturnType<typeof setInterval> | null = null
   let thinkStart = 0
   let thinkingReported = false
@@ -143,9 +147,15 @@ async function runTurnWithUI(
     thinkStart = Date.now()
     thinkingReported = false
     thinkSpinner = createSpinner('Thinking...')
+    // 250ms 刷新 spinner 文本：秒数 + 已收推理字符数。thinking 模型在折叠模式下
+    // 推理阶段不打印 CoT，靠这个递增的计数让用户看到"在动"（而非冻结的一行）；
+    // 节流到 250ms 而非每个 reasoning delta 更新，避免刷屏。
     thinkTimer = setInterval(() => {
+      if (!thinkSpinner) return
       const s = Math.floor((Date.now() - thinkStart) / 1000)
-      if (thinkSpinner) thinkSpinner.text = s >= 1 ? `Thinking... (${s}s)` : 'Thinking...'
+      const rc = reasoningBuf.length
+      const prog = rc > 0 ? ` · ${rc >= 1000 ? (rc / 1000).toFixed(1) + 'k' : rc} reasoning` : ''
+      thinkSpinner.text = (s >= 1 ? `Thinking... (${s}s)` : 'Thinking...') + prog
     }, 250)
     thinkTimer.unref?.()
   }
@@ -155,9 +165,8 @@ async function runTurnWithUI(
       thinkTimer = null
     }
     if (thinkSpinner) {
-      thinkSpinner.stop()
+      thinkSpinner.stop() // 清掉 spinner 行；光标显隐由本函数外层统一管理
       thinkSpinner = null
-      process.stderr.write('\x1b[?25l') // ora.stop() 会恢复光标，重新隐藏
     }
   }
   const reportThinking = () => {
@@ -174,7 +183,6 @@ async function runTurnWithUI(
   // —— 思考链流式（thinking 模型）：暗色打到 stderr，保持 stdout 只含最终答案 ——
   let reasoningStreaming = false
   // —— diff：在工具执行前后读取文件内容做对比 ——
-  let toolSpinner: Ora | null = null
   let pendingDiff: { path: string; before: string } | null = null
 
   try {
@@ -202,7 +210,11 @@ async function runTurnWithUI(
             reportThinking() // 无思考流的普通模型：补一行 "Thinking... (X.Xs)"
           }
           streaming = true
-          write('  ') // 模型输出首行缩进 2 格
+          // 语义分区：思考链与最终答案之间加区域标记
+          if (reasoningBuf.length > 0) {
+            write(fmt.dim('\n  ── Response ──\n'))
+          }
+          write('  ')
         }
         // 换行后保持缩进
         write(delta.replace(/\n/g, '\n  '))
@@ -239,17 +251,17 @@ async function runTurnWithUI(
       },
       onToolCall: (name, input) => {
         if (streaming) { write('\n'); streaming = false }
-        // 截取简短参数用于紧凑显示
         const args = input.path ? String(input.path).slice(-40)
           : input.command ? String(input.command).slice(0, 50)
           : input.pattern ? String(input.pattern).slice(0, 50)
           : ''
-        // 捕获改动前内容用于 diff
         pendingDiff = null
         if (DIFF_TOOLS.has(name) && input.path) {
           try { pendingDiff = { path: String(input.path), before: readFileSync(resolve(process.cwd(), String(input.path)), 'utf8') } } catch { pendingDiff = { path: String(input.path), before: '' } }
         }
-        // 紧凑格式：状态圈 + 工具名 + 参数
+        // 存储工具输入供 Ctrl+T 展开
+        ui.toolDetails.set(`t${totalTools}`, { input: { ...input } })
+        if (thinkSpinner) thinkSpinner.text = `Running ${name}...`
         const blockId = `t${totalTools}`
         ui.blockManager.addBlock('tool-call', fmt.toolCompactRunning(name, args))
         process.stderr.write(`\r\x1b[0K${fmt.toolCompactRunning(name, args)}\n`)
@@ -371,7 +383,11 @@ program
 
       const resuming = opts.resume !== undefined
       const yolo = Boolean(opts.yolo)
-      const settings = loadSettings(process.cwd())
+      let settings: ReturnType<typeof loadSettings>
+      try { settings = loadSettings(process.cwd()) } catch {
+        settings = { maxTokens: 8192, contextTokens: 0, autoCompact: true, sandbox: 'isolated' } as any
+        process.stderr.write(fmt.yellow('⚠ Settings error — using defaults\n'))
+      }
       // --effort high/max → 切到 FLOOM_REASONER_MODEL 指定的 thinking+工具模型（未配置则告警回退）
       const effort = resolveEffortModel(opts.model, opts.effort, REASONER_MODEL)
       const effectiveModel = effort.model
@@ -402,35 +418,23 @@ program
         hasRepl: interactive,
         blockManager: new BlockManager(),
         postToolHooks: hooks.PostToolUse ?? [],
+        toolDetails: new Map(),
       }
 
       const onExpand = (mode: 'one' | 'all') => {
-        process.stderr.write('\x1b[?25l')
-        if (mode === 'one') {
-          const id = ui.blockManager.expandOne()
-          if (id) {
-            const block = ui.blockManager.all.find(b => b.id === id)
-            if (block && block.contentLines.length > 0) {
-              process.stderr.write('\n' + fmt.dim(`  ── expanded: ${block.summaryLine.trim()} ──`) + '\n')
-              for (const line of block.contentLines) {
-                process.stderr.write(line + '\n')
-              }
-            }
-          }
-        } else {
-          const ids = ui.blockManager.expandAll()
-          if (ids.length > 0) {
-            process.stderr.write('\n' + fmt.dim('  ── expanded all ──') + '\n')
-            for (const id of ids) {
-              const block = ui.blockManager.all.find(b => b.id === id)
-              if (block && block.contentLines.length > 0) {
-                for (const line of block.contentLines) {
-                  process.stderr.write(line + '\n')
-                }
-              }
-            }
-          }
+        const idx = mode === 'all' ? 0 : ui.blockManager.firstCollapsedIndex()
+        if (idx === -1 || (mode === 'one' && !ui.blockManager.expandOne())) {
+          return
         }
+        if (mode === 'all') ui.blockManager.expandAll()
+
+        process.stderr.write('\x1b[?25l')
+        // ANSI 原位展开：上移到第一个折叠块，+2 补齐摘要行和状态栏
+        const upLines = ui.blockManager.cursorDelta(idx) + 2
+        if (upLines > 0) process.stderr.write(`\x1b[${upLines}A`)
+        process.stderr.write('\r\x1b[J') // 清除从光标到屏幕底
+        const rendered = ui.blockManager.renderFrom(idx, false)
+        for (const line of rendered) process.stderr.write(line + '\n')
         process.stderr.write('\x1b[?25h')
       }
 
@@ -444,6 +448,11 @@ program
             onExpand,
           })
         : null
+
+      // 加载命令历史
+      if (reader) {
+        reader.loadHistory(resolve(homedir(), '.floom', 'history.json'))
+      }
 
       // 默认：文件工具限定在当前工作目录内；敏感文件防护始终生效（--yolo 不绕过）。
       const confined: PathPolicy = yolo ? allowAllPaths : confineToRoot(process.cwd())
@@ -495,6 +504,7 @@ program
       session.registry.register(makeGitRevertTool())
       session.registry.register(makeGitBlameTool())
       session.registry.register(makeGitTagTool())
+      session.registry.register(makeGitBisectTool())
       // Task 系统
       const taskStore = new TaskStore(process.cwd())
       session.registry.register(makeTaskCreateTool(taskStore))
@@ -529,6 +539,7 @@ program
         if (!pm.allow) return pm
         const res = evaluatePreToolUse(hooks.PreToolUse, name, input)
         if (res.decision === 'deny') {
+          auditLog({ decision: 'deny', tool: name, input: JSON.stringify(input).slice(0, 200) })
           return { allow: false, message: res.messages.join('; ') || 'denied by PreToolUse hook' }
         }
         if (res.decision === 'ask') {
@@ -543,11 +554,26 @@ program
             { label: 'Yes', value: 'yes' },
             { label: 'No', value: 'no' },
           ])
+          auditLog({ decision: 'ask', tool: name, input: JSON.stringify(input).slice(0, 200), userChoice: choice === 0 ? 'yes' : 'no' })
           return { allow: choice === 0 }
         }
         return { allow: true } // allow / none → 放行（仍受既有权限层约束）
       }
       session.gate = makeGate()
+
+      // 状态栏
+      const status = createStatusBar()
+      status.model = effectiveModel
+      status.planMode = planState.active
+      const updateStatus = () => {
+        status.model = session.model
+        status.inputTokens = session.usage.inputTokens
+        status.outputTokens = session.usage.outputTokens
+        status.cacheHitTokens = session.usage.cacheHitTokens
+        status.planMode = planState.active
+        const sb = renderStatusBar(status)
+        if (sb) process.stderr.write(sb + '\n')
+      }
 
       // MCP servers（.floom/mcp.json）：连接后把其工具注册进 registry，agent 像用内置工具一样用它们。
       // 无配置 = 不 spawn 任何进程 = 零行为变化。单个 server 失败只告警跳过。
@@ -601,27 +627,23 @@ program
           onActivity: (a) => {
             if (a.kind === 'tool') {
               if (subDepth === 0) {
-                stopActiveSpinner() // 让出终端给嵌套进度
-                process.stderr.write(fmt.dim('    ⤷ sub-agent working…') + '\n')
+                stopActiveSpinner()
+                process.stderr.write(fmt.dim('  ╭─ sub-agent\n'))
                 subDepth = 1
               }
-              process.stderr.write(
-                fmt.dim(`      · ${a.name}${a.detail ? ' ' + a.detail : ''}`) + '\n',
-              )
+              const ms = a.ms ? fmt.dim(` (${(a.ms / 1000).toFixed(1)}s)`) : ''
+              const err = a.isError ? fmt.red(' ✗') : ''
+              process.stderr.write(fmt.dim(`  ├─ ${a.name ?? 'tool'}${err}${ms}`) + '\n')
+            } else if (a.kind === 'tool-done') {
+              // tool-done events are suppressed — final status shown inline above
             } else if (a.kind === 'done') {
-              if (subDepth === 0) stopActiveSpinner() // 子 agent 没调工具也要清掉 spinner
-              const head = a.isError
-                ? fmt.red('    ⤷ sub-agent failed')
-                : fmt.dim('    ⤷ sub-agent done')
+              if (subDepth === 0) stopActiveSpinner()
+              const icon = a.isError ? fmt.red('  ╰─ failed') : fmt.green('  ╰─ done')
               process.stderr.write(
-                head +
-                  fmt.dim(
-                    ` · ${a.tools} tool(s) · ${a.tokens} tok · ${((a.ms ?? 0) / 1000).toFixed(1)}s`,
-                  ) +
-                  '\n',
+                icon + fmt.dim(` · ${a.tools ?? 0} tools · ${a.tokens ?? 0} tok · ${((a.ms ?? 0) / 1000).toFixed(1)}s`) + '\n',
               )
               subDepth = 0
-              subShells?.killAll() // 子 agent 跑完即清理它的后台进程，不留孤儿
+              subShells?.killAll()
               subShells = null
             }
           },
@@ -634,12 +656,14 @@ program
       )
 
       // exit_plan_mode：计划模式下模型调研完后提交计划；用户方向键批准则关计划模式、解锁全工具。
+      let lastPlanText = ''
       session.registry.register(
         makeExitPlanModeTool({
           active: () => planState.active,
           propose: async (plan) => {
-            if (!canApprove) return false // 无 TTY 无法弹批准菜单（计划模式入口已据此门控，此处为防御）
+            if (!canApprove) return false
             stopActiveSpinner()
+            lastPlanText = plan
             process.stderr.write('\n' + fmt.bold('  ✦ Proposed plan') + '\n')
             for (const line of plan.split('\n')) process.stderr.write(fmt.cyan('  │ ') + line + '\n')
             process.stderr.write('\n')
@@ -655,6 +679,13 @@ program
           onApproved: () => {
             planState.active = false
             refreshSystem()
+            // 保存计划到 .floom/plan-{sessionId}.md
+            try {
+              const planPath = resolve(process.cwd(), '.floom', `plan-${sessionId}.md`)
+              mkdirSync(dirname(planPath), { recursive: true })
+              writeFileSync(planPath, `# Plan: ${title || 'Untitled'}\n\n${lastPlanText}\n`, 'utf8')
+              process.stderr.write(fmt.dim(`  📋 plan saved to .floom/plan-${sessionId}.md\n`))
+            } catch { /* 落盘失败不影响主流程 */ }
             process.stderr.write(fmt.green('  ✦ plan approved — executing\n'))
           },
         }),
@@ -702,6 +733,9 @@ program
         createdAt = new Date().toISOString()
       }
 
+      // 自动清理旧会话（保留最近 50 个）
+      try { store.cleanOldSessions(50) } catch { /* 清理失败不影响主流程 */ }
+
       // 一次性模式（给了 task 且非 resume）：跑完即走，不落盘
       if (!interactive) {
         try {
@@ -740,12 +774,35 @@ program
           fmt.yellow('⚠ --yolo: path confinement and shell confirmation disabled\n'),
         )
       }
-      // API key 检测：检查 key 是否已加载并显示来源
+      // 首次运行向导：API key 未配置时交互式引导
       const key = process.env.DEEPSEEK_API_KEY
-      if (!key) {
-        process.stderr.write(
-          fmt.red('\n⚠ NO API KEY — set DEEPSEEK_API_KEY in ~/.floom/.env or .env\n\n'),
-        )
+      if (!key && interactive) {
+        process.stderr.write(fmt.yellow('\n  ⚡ First run detected — let\'s configure your API key.\n'))
+        process.stderr.write(fmt.dim('  Get a key at https://platform.deepseek.com/api_keys\n'))
+        process.stderr.write(fmt.dim('  Paste your key below (input hidden):\n  > '))
+        // 简易隐藏输入：切换 raw mode 逐字符读取
+        try {
+          const { ReplReader } = await import('./cli/repl-input.js')
+          const r = new ReplReader({ out: process.stderr, promptText: '' })
+          const input = await r.question()
+          r.close()
+          const trimmed = (input ?? '').trim()
+          if (trimmed) {
+            const envPath = join(homedir(), '.floom', '.env')
+            try { mkdirSync(dirname(envPath), { recursive: true }) } catch {}
+            const existing = existsSync(envPath) ? readFileSync(envPath, 'utf8') : ''
+            const quoted = JSON.stringify(trimmed) // 安全转义 $ ` " # 等特殊字符
+            const hasKey = /^DEEPSEEK_API_KEY=/m.test(existing)
+            const content = hasKey
+              ? existing.replace(/^DEEPSEEK_API_KEY=.*/m, () => `DEEPSEEK_API_KEY=${quoted}`)
+              : existing + `\nDEEPSEEK_API_KEY=${quoted}\n`
+            writeFileSync(envPath, content, 'utf8')
+            process.env.DEEPSEEK_API_KEY = trimmed
+            process.stderr.write(fmt.green('  ✓ API key saved to ~/.floom/.env\n\n'))
+          }
+        } catch { /* 向导失败不阻止启动 */ }
+      } else if (!key) {
+        process.stderr.write(fmt.red('\n⚠ NO API KEY — set DEEPSEEK_API_KEY in ~/.floom/.env or .env\n\n'))
       }
       showWelcome({
         version: VERSION,
@@ -805,24 +862,56 @@ program
         },
         save: () => persist(),
         listSessions: () => sessionsText(store),
+        showSessionMenu: async () => {
+          const { showSessionMenu } = await import('./cli/session-factory.js')
+          return showSessionMenu(store, {})
+        },
         getSettings: () => describeSettings(settings),
+        saveSetting: (key, value) => saveSetting(process.cwd(), key, value),
+        resetSettings: () => resetSettings(process.cwd()),
         listMemories: () => {
           const mems = memoryStore.list()
           if (mems.length === 0) return fmt.dim('No memories stored.')
           return fmt.bold(`Memories (${mems.length}):`) + '\n' +
             mems.map(m => `  ${fmt.cyan(m.name)}  ${fmt.dim(`(${m.type})`)}  ${m.description}`).join('\n')
         },
+        listCronJobs: () => {
+          const jobs = cronScheduler.list()
+          if (jobs.length === 0) return fmt.dim('No scheduled cron jobs.')
+          return jobs.map(j =>
+            `  ${j.id}  ${j.expr}  →  "${j.prompt.slice(0, 60)}"  next: ${j.nextRun.slice(0, 19)}`
+          ).join('\n')
+        },
+        toggleStatus: () => { status.show = !status.show; return status.show },
       }
 
+      let retryLine = ''
+      let turnNum = 0
       try {
         for (;;) {
-          const raw = await reader!.question()
-          if (raw === null) break // Ctrl-C / Ctrl-D / EOF → 退出
-          const line = raw.trim()
-          if (line === '') continue
+          let line: string
+          const slashRetry = retryLine && retryLine !== '/retry' ? runSlash('/retry', slashCtx) : null
+          if (slashRetry?.handled && slashRetry.retry) {
+            line = retryLine
+            retryLine = ''
+            process.stderr.write(fmt.dim(`  ↻ retrying: ${line.slice(0, 80)}\n`))
+          } else {
+            const raw = await reader!.question()
+            if (raw === null) break
+            line = raw.trim()
+            if (line === '') continue
+          }
           const slash = runSlash(line, slashCtx)
           if (slash.handled) {
             if (slash.exit) break
+            if (slash.retry) {
+              if (line !== '/retry') retryLine = line
+              continue
+            }
+            if (slash.interactiveSessions) {
+              try { const r = await slashCtx.showSessionMenu!(); if (r) process.stderr.write(r + '\n') } catch {}
+              continue
+            }
             if (slash.skill) {
               const skill = skillRegistry.get(slash.skill)
               if (skill) {
@@ -844,8 +933,8 @@ program
                   let prompt = skill.systemPrompt
                   if (slash.skillArgs) {
                     const argsArr = slash.skillArgs.split(/\s+/).filter(Boolean)
-                    prompt = prompt.replace(/\$\{args\}/g, slash.skillArgs)
-                    argsArr.forEach((a, i) => { prompt = prompt.replace(new RegExp(`\\$\\{${i + 1}\\}`, 'g'), a) })
+                    prompt = prompt.replace(/\$\{args\}/g, () => slash.skillArgs!)
+                    argsArr.forEach((a, i) => { prompt = prompt.replace(new RegExp(`\\$\\{${i + 1}\\}`, 'g'), () => a) })
                   }
                   session.system = prompt
                   try {
@@ -863,14 +952,14 @@ program
               continue
             }
             if (slash.compact) {
-              // 手动 /compact：摘要除最新一轮外的全部历史，折叠进 system。需模型调用，故在此异步执行。
               if (session.messages.length === 0) {
                 process.stderr.write(fmt.dim('  nothing to compact (no history yet)\n'))
                 continue
               }
               process.stderr.write(fmt.dim('  🗜 compacting conversation…\n'))
               try {
-                const c = await compactMessages({
+                // 网络错误重试一次，模型拒绝不重试
+                const doCompact = async () => compactMessages({
                   client: session.client,
                   system: session.system,
                   messages: session.messages,
@@ -880,6 +969,21 @@ program
                   maxTokens: session.maxTokens,
                   keepLastRounds: 1,
                 })
+                let c = await doCompact().catch((e) => {
+                  // 网络错误（无 HTTP 状态码）→ 重试一次；模型拒绝（4xx）→ 直接失败
+                  const status = (e as any)?.status ?? (e as any)?.response?.status
+                  const code = (e as any)?.code ?? ''
+                  const netErr = !status && (
+                    code === 'ECONNREFUSED' || code === 'ETIMEDOUT' ||
+                    code === 'ENOTFOUND' || code === 'ECONNRESET'
+                  )
+                  if (netErr) return null
+                  throw e
+                })
+                if (c === null) {
+                  process.stderr.write(fmt.dim('  🗜 retrying after network error…\n'))
+                  c = await doCompact()
+                }
                 if (c) {
                   session.system = c.system
                   session.messages = c.messages
@@ -900,6 +1004,8 @@ program
             continue
           }
           try {
+            turnNum++
+            if (turnNum > 1) process.stderr.write(fmt.dim(`\n  ── turn ${turnNum} ──\n`))
             await runTurnWithUI(session, line, write, ui)
           } catch (e) {
             process.stderr.write(fmt.red(`\n  ✗ ${(e as Error).message ?? String(e)}\n`))
@@ -911,10 +1017,13 @@ program
           }
           process.stdout.write('\n')
           if (!title) title = line.slice(0, 60)
+          retryLine = line // 保存以供 /retry
           persist()
+          updateStatus()
         }
       } finally {
         // 任何路径退出（正常 / runTurn 抛错）都清理：关后台进程、关 MCP、关 reader
+        reader!.saveHistory(resolve(homedir(), '.floom', 'history.json'))
         reader!.close()
         cleanup()
       }
@@ -933,7 +1042,8 @@ program
     'model id',
     process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro',
   )
-  .option('--sandbox <type>', 'sandbox type: vm (default) or isolated (stub)', 'vm')
+  .option('--sandbox <type>', 'sandbox type: isolated (default) or vm (requires --unsafe-sandbox)')
+  .option('--unsafe-sandbox', 'allow node:vm as sandbox fallback (NOT a security sandbox)')
   .option('--workspace <dir>', 'custom workspace directory (default: temp dir)')
   .option('--no-cleanup', 'keep workspace directory after execution')
   .action(
@@ -969,14 +1079,30 @@ program
         )
       }
 
-      let runtime: NodeVmRuntime | undefined
-      if (opts.sandbox === 'vm') {
+      let runtime: NodeVmRuntime | IsolatedVmRuntime | undefined
+      const sandboxType = (opts.sandbox ?? 'isolated').toLowerCase()
+      if (sandboxType === 'vm') {
+        if (!(opts as any).unsafeSandbox) {
+          process.stderr.write(fmt.red('ERROR: --sandbox vm requires --unsafe-sandbox flag (node:vm is NOT secure)\n'))
+          process.exit(1)
+        }
         runtime = new NodeVmRuntime()
-      } else if (opts.sandbox === 'isolated') {
-        process.stderr.write(
-          fmt.yellow('WARNING: ') +
-            'isolated-vm sandbox not yet implemented, using default\n',
-        )
+      } else if (sandboxType !== 'isolated') {
+        process.stderr.write(fmt.red(`ERROR: invalid --sandbox "${opts.sandbox}". Valid: isolated, vm\n`))
+        process.exit(1)
+      } else {
+        try {
+          runtime = await IsolatedVmRuntime.create()
+        } catch {
+          if ((opts as any).unsafeSandbox) {
+            process.stderr.write(fmt.yellow('WARNING: isolated-vm not available, falling back to node:vm (--unsafe-sandbox enabled)\n'))
+            runtime = new NodeVmRuntime()
+          } else {
+            process.stderr.write(fmt.red('ERROR: isolated-vm is not installed. Install with: npm install isolated-vm\n'))
+            process.stderr.write(fmt.dim('       Or pass --unsafe-sandbox to use node:vm (NOT a security sandbox).\n'))
+            process.exit(1)
+          }
+        }
       }
 
       const result = await executeWorkflow({
@@ -988,7 +1114,7 @@ program
           mkdirSync(dirname(resolve(opts.journal)), { recursive: true })
           return opts.journal
         })(),
-        budgetLimit: parseInt(opts.budget, 10),
+        budgetLimit: (Number.isFinite(Number(opts.budget)) ? Number(opts.budget) : 1_000_000),
         model: opts.model,
         system: makeSystem(opts.model),
         runtime,

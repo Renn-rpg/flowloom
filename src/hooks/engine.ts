@@ -100,9 +100,14 @@ export function evaluatePostToolUse(
   })).filter(h => h.command)
 }
 
-// 替换命令中的模板变量：${path} → input.path, ${command} → input.command 等
-export function expandHookCommand(template: string, input: Record<string, unknown>): string {
-  return template.replace(/\$\{(\w+)\}/g, (_, key) => String(input[key] ?? ''))
+// 替换命令中的模板变量：${path} → input.path, ${command} → input.command 等。
+// 支持全局变量：${cwd}, ${model}, ${sessionId}, ${timestamp}。
+export function expandHookCommand(template: string, input: Record<string, unknown>, globals?: Record<string, string>): string {
+  const merged = { ...globals, ...input } // input 优先覆盖 globals
+  return template.replace(/\$\{(\w+)\}/g, (_, key) => {
+    if (key === 'timestamp') return new Date().toISOString()
+    return String(merged[key] ?? '')
+  })
 }
 
 // 从 <dir>/.floom/hooks.json 读配置；无文件/坏 JSON/非法形状 → 空配置（不抛、不影响运行）。

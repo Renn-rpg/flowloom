@@ -33,7 +33,7 @@ export interface ToolPolicy {
 // ── 常量 ───────────────────────────────────────────────────────────────────
 export const CONTEXT_TOKENS = Math.max(0, Number(process.env.FLOOM_CONTEXT_TOKENS) || 0)
 export const REASONER_MODEL = process.env.FLOOM_REASONER_MODEL || (process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro')
-export const MAX_TOKENS = Number(process.env.FLOOM_MAX_TOKENS) || 8192
+export const MAX_TOKENS = Math.max(1, Number(process.env.FLOOM_MAX_TOKENS) || 8192)
 
 // ── System Prompts ─────────────────────────────────────────────────────────
 
@@ -159,4 +159,50 @@ export function sessionsText(store: SessionStore): string {
     (m) => `  ${fmt.cyan(m.id)}  ${fmt.dim(m.updatedAt)}  ${fmt.dim(`(${m.messageCount} msgs · ${m.model})`)}  ${m.title}`,
   )
   return fmt.bold(`Saved sessions (${metas.length}):`) + '\n' + lines.join('\n')
+}
+
+// 交互式会话管理器：方向键选择，d=delete, q=quit
+export async function showSessionMenu(
+  store: SessionStore,
+  opts: { onResume?: (id: string) => void; onDelete?: (id: string) => void },
+): Promise<string> {
+  const { selectMenu } = await import('./prompt.js')
+  const metas = store.list()
+  if (metas.length === 0) return fmt.dim('No saved sessions.')
+
+  const items = metas.map(m => ({
+    label: `${m.id.slice(0, 24)}  ${m.updatedAt.slice(0, 19)}  ${m.messageCount}msgs`,
+    value: m.id,
+  }))
+
+  const lines = [fmt.bold(`Saved sessions (${metas.length}) — select to resume, d=delete, q=quit`), '']
+  const choice = await selectMenu(lines, items)
+  if (choice < 0) return ''
+
+  const id = items[choice].value
+  const session = store.load(id)
+  if (!session) return fmt.red('Session not found.')
+
+  // 显示操作选择
+  const actionLines = [
+    fmt.bold(`Session: ${session.id}`),
+    fmt.dim(`  ${session.messages.length} messages · ${session.model} · ${session.updatedAt}`),
+    fmt.dim(`  ${session.title || '(untitled)'}`),
+    '',
+  ]
+  const action = await selectMenu(actionLines, [
+    { label: 'Resume', value: 'resume' },
+    { label: 'Delete', value: 'delete' },
+  ])
+
+  if (action === 0) {
+    opts.onResume?.(id)
+    return fmt.green(`Resumed session ${id}`)
+  }
+  if (action === 1) {
+    store.delete(id) // using the store's delete method
+    opts.onDelete?.(id)
+    return fmt.yellow(`Deleted session ${id}`)
+  }
+  return ''
 }

@@ -105,6 +105,23 @@ describe('expandHookCommand', () => {
   it('leaves non-template text untouched', () => {
     expect(expandHookCommand('git status', { path: 'a.ts' })).toBe('git status')
   })
+
+  it('supports ${cwd} global variable', () => {
+    expect(expandHookCommand('cd ${cwd}', {}, { cwd: '/project' })).toBe('cd /project')
+  })
+
+  it('supports ${model} global variable', () => {
+    expect(expandHookCommand('echo ${model}', {}, { model: 'deepseek-v4-pro' })).toBe('echo deepseek-v4-pro')
+  })
+
+  it('supports ${timestamp} global variable', () => {
+    const result = expandHookCommand('${timestamp}', {})
+    expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+  })
+
+  it('input values override globals with same key', () => {
+    expect(expandHookCommand('${cwd}', { cwd: '/override' }, { cwd: '/global' })).toBe('/override')
+  })
 })
 
 describe('loadHooks', () => {

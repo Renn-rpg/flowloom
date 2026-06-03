@@ -99,7 +99,7 @@ export interface WorkflowCtx {
 
 // Runtime 抽象（默认 NodeVmRuntime，未来可选 IsolatedVmRuntime）
 export interface Runtime {
-  createContext(api: Record<string, unknown>): RuntimeContext
+  createContext(api: Record<string, unknown>): RuntimeContext | Promise<RuntimeContext>
 }
 
 export interface RuntimeContext {
@@ -111,6 +111,7 @@ export interface RuntimeContext {
     fn: (...args: unknown[]) => unknown,
     ...args: unknown[]
   ): Promise<unknown>
+  dispose?(): Promise<void>
 }
 
 // agent-executor 返回结果（文本 + 用量，供 journal 落盘用）。

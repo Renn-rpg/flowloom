@@ -30,6 +30,12 @@ function fakeCtx(): SlashContext & { _s: Record<string, unknown> } {
     clearHistory: () => { const n = s.messages; s.messages = 0; return n },
     save: () => { s.saved = true; return true },
     listSessions: () => 'SESSION-LIST',
+    listMemories: () => 'MEMORY-LIST',
+    getSettings: () => 'SETTINGS-SUMMARY',
+    saveSetting: () => 'SAVED',
+    resetSettings: () => 'RESET',
+    listCronJobs: () => 'CRON-LIST',
+    toggleStatus: () => true,
   }
 }
 
@@ -124,6 +130,18 @@ describe('runSlash', () => {
 
   it('/sessions delegates to the context', () => {
     expect(runSlash('/sessions', fakeCtx()).output).toBe('SESSION-LIST')
+  })
+
+  it('/memory shows persistent memories', () => {
+    expect(runSlash('/memory', fakeCtx()).output).toBe('MEMORY-LIST')
+  })
+
+  it('/config shows effective settings', () => {
+    expect(runSlash('/config', fakeCtx()).output).toBe('SETTINGS-SUMMARY')
+  })
+
+  it('/cron lists scheduled jobs', () => {
+    expect(runSlash('/cron', fakeCtx()).output).toBe('CRON-LIST')
   })
 
   it('unknown command hints at /help', () => {

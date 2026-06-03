@@ -3,9 +3,9 @@ import { promisify } from 'node:util'
 import type { Tool } from './types.js'
 import { type ShellPolicy, allowAllShell } from './permissions.js'
 import type { BackgroundShells } from './shell-manager.js'
+import { TOOL_OUTPUT_LIMIT } from '../config/constants.js'
 const exec = promisify(execFile)
-// 默认超时（毫秒），可用 FLOOM_SHELL_TIMEOUT_MS 覆盖；防止挂起命令（如启动服务器）永久阻塞 agent
-const SHELL_TIMEOUT_MS = Number(process.env.FLOOM_SHELL_TIMEOUT_MS) || 120_000
+const SHELL_TIMEOUT_MS = Math.max(1000, Number(process.env.FLOOM_SHELL_TIMEOUT_MS) || 120_000)
 
 // manager 存在时支持 background:true（长跑命令后台执行，bash_output 轮询 / kill_shell 终止）。
 export function makeBashTool(shell: ShellPolicy = allowAllShell, manager?: BackgroundShells): Tool {
@@ -44,13 +44,13 @@ export function makeBashTool(shell: ShellPolicy = allowAllShell, manager?: Backg
       }
       const sh = process.platform === 'win32' ? 'pwsh' : 'bash'
       const args = process.platform === 'win32' ? ['-NoProfile', '-Command', cmd] : ['-c', cmd]
-      try { const { stdout, stderr } = await exec(sh, args, { maxBuffer: 10 * 1024 * 1024, timeout: SHELL_TIMEOUT_MS, killSignal: 'SIGTERM' }); return (stdout + stderr).slice(0, 10_000) }
+      try { const { stdout, stderr } = await exec(sh, args, { maxBuffer: 10 * 1024 * 1024, timeout: SHELL_TIMEOUT_MS, killSignal: 'SIGTERM' }); return (stdout + stderr).slice(0, TOOL_OUTPUT_LIMIT) }
       catch (e: any) {
         const timedOut = e.killed && e.signal === 'SIGTERM'
         const prefix = timedOut ? `ERROR: command timed out after ${SHELL_TIMEOUT_MS}ms` : `ERROR: ${e.message}`
         const out = typeof e.stdout === 'string' ? e.stdout : (e.stdout ? String(e.stdout) : '')
         const err = typeof e.stderr === 'string' ? e.stderr : (e.stderr ? String(e.stderr) : '')
-        return `${prefix}\n${out}${err}`.slice(0, 10_000)
+        return `${prefix}\n${out}${err}`.slice(0, TOOL_OUTPUT_LIMIT)
       }
     },
   }

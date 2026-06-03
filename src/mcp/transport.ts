@@ -34,71 +34,76 @@ export interface StdioTransportConfig {
   env?: Record<string, string>
   cwd?: string
   onStderr?: (s: string) => void
+  onDisconnect?: () => void // 子进程意外退出回调
 }
 
-// stdio 传输：spawn 子进程，stdin 写、stdout 读（换行分隔 JSON），stderr 仅日志（不当错误）。
+// stdio 传输：spawn 子进程，stdin 写、stdout 读（换行分隔 JSON），stderr 仅日志。
+// 支持进程退出检测 + restart() 重连。
 export class StdioTransport implements Transport {
   private child?: ChildProcess
   private decoder = new LineDecoder()
   private handler: (msg: any) => void = () => {}
+  private _closing: Promise<void> | null = null
+  private _exited = false
   constructor(private cfg: StdioTransportConfig) {}
 
-  onMessage(handler: (msg: any) => void): void {
-    this.handler = handler
+  get isConnected(): boolean { return !!this.child && !this._exited }
+
+  onMessage(handler: (msg: any) => void): void { this.handler = handler }
+
+  async start(): Promise<void> { await this._spawn() }
+
+  async restart(): Promise<void> {
+    if (this._closing) return
+    this._exited = false; this._closing = null
+    for (let i = 0; i < 3; i++) {
+      try { await this._spawn(); return } catch {
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)))
+      }
+    }
+    throw new Error(`MCP restart failed after 3 attempts: ${this.cfg.command}`)
   }
 
-  async start(): Promise<void> {
+  private async _spawn(): Promise<void> {
     const child = spawn(this.cfg.command, this.cfg.args ?? [], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: buildChildEnv(this.cfg.env),
-      cwd: this.cfg.cwd,
-      shell: false, // 不经 shell，避免注入；命令/参数按 config 原样传
+      stdio: ['pipe', 'pipe', 'pipe'], env: buildChildEnv(this.cfg.env),
+      cwd: this.cfg.cwd, shell: false,
     })
-    this.child = child
+    this.child = child; this._exited = false
     child.stdout?.setEncoding('utf8')
     child.stdout?.on('data', (chunk: string) => {
-      for (const msg of this.decoder.push(chunk)) this.handler(msg)
+      for (const msg of this.decoder.push(chunk)) {
+        try { this.handler(msg) } catch { /* ignore */ }
+      }
     })
     child.stderr?.setEncoding('utf8')
-    child.stderr?.on('data', (s: string) => this.cfg.onStderr?.(s)) // 仅日志
-    // 等 spawn 成功或失败（命令不存在 → error）
+    child.stderr?.on('data', (s: string) => {
+      try { this.cfg.onStderr?.(s) } catch { /* ignore */ }
+    })
+    child.on('exit', () => {
+      if (this.child !== child) return // 忽略旧子进程的 exit 事件
+      if (!this._closing) { this._exited = true; this.cfg.onDisconnect?.() }
+    })
     await new Promise<void>((resolve, reject) => {
       child.once('spawn', () => resolve())
       child.once('error', (e) => reject(e))
     })
   }
 
-  send(msg: object): void {
-    this.child?.stdin?.write(encodeMessage(msg))
-  }
+  send(msg: object): void { this.child?.stdin?.write(encodeMessage(msg)) }
 
-  // 优雅关停：关 stdin → 等退出 → 超时则 SIGTERM（spec 的 stdio shutdown 流程）
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    if (this._closing) return this._closing
     const child = this.child
-    if (!child) return
-    try {
-      child.stdin?.end()
-    } catch {
-      /* ignore */
-    }
-    await new Promise<void>((resolve) => {
+    if (!child) return Promise.resolve()
+    this._closing = new Promise<void>((resolve) => {
       let done = false
-      const finish = () => {
-        if (!done) {
-          done = true
-          resolve()
-        }
-      }
-      child.once('exit', finish)
-      const t = setTimeout(() => {
-        try {
-          child.kill('SIGTERM')
-        } catch {
-          /* ignore */
-        }
-        finish()
-      }, 1000)
+      const finish = () => { if (done) return; done = true; try { child.stdin?.end() } catch {}; resolve() }
+      child.once('exit', () => finish())
+      const t = setTimeout(() => { try { child.kill('SIGTERM') } catch {}; finish() }, 1000)
       t.unref?.()
-    })
+      try { child.stdin?.end() } catch {}
+    }).finally(() => { this._closing = null }) // 完成后清理，允许 restart
+    return this._closing
   }
 }

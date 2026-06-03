@@ -103,3 +103,44 @@ export const allowAllShell: ShellPolicy = {
 export const denyAllShell: ShellPolicy = {
   authorize: () => false,
 }
+
+// ── 权限审计日志 ────────────────────────────────────────────────────────────
+// 记录每次 deny/ask 决策到 .floom/permissions.log（JSONL 格式）。
+// 日志轮转：保留最近 1000 行。
+
+import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+
+const MAX_LOG_LINES = 1000
+
+function logPath(): string {
+  return resolve(process.cwd(), '.floom', 'permissions.log')
+}
+
+export function auditLog(entry: {
+  decision: 'allow' | 'deny' | 'ask'
+  tool: string
+  input: string  // 摘要（最多 200 字符）
+  userChoice?: string
+}): void {
+  try {
+    const path = logPath()
+    mkdirSync(dirname(path), { recursive: true })
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      ...entry,
+    }) + '\n'
+
+    // 追加
+    appendFileSync(path, line, 'utf8')
+
+    // 轮转：超过上限时裁剪
+    try {
+      const content = readFileSync(path, 'utf8')
+      const lines = content.split('\n').filter(Boolean)
+      if (lines.length > MAX_LOG_LINES) {
+        writeFileSync(path, lines.slice(-MAX_LOG_LINES).join('\n') + '\n', 'utf8')
+      }
+    } catch { /* 轮转失败不影响主流程 */ }
+  } catch { /* 审计日志写入失败不影响主流程 */ }
+}

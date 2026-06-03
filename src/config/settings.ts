@@ -7,8 +7,8 @@
 //
 // 读取逻辑：深层合并，数组用覆盖（不合并），高优先级覆盖低优先级。
 
-import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, statSync } from 'node:fs'
+import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { validateSettings, type ValidatedSettings } from './schema.js'
 
@@ -36,6 +36,7 @@ const DEFAULT_SETTINGS: FloomSettings = {
 function mergeDeep(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
   const result = { ...base }
   for (const [k, v] of Object.entries(override)) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue // 防原型污染
     if (v !== null && typeof v === 'object' && !Array.isArray(v) &&
         k in result && typeof result[k] === 'object' && !Array.isArray(result[k])) {
       result[k] = mergeDeep(result[k] as Record<string, unknown>, v as Record<string, unknown>)
@@ -49,6 +50,7 @@ function mergeDeep(base: Record<string, unknown>, override: Record<string, unkno
 function loadJson(path: string): Record<string, unknown> | null {
   try {
     if (!existsSync(path)) return null
+    if (statSync(path).size > 1_000_000) return null // 拒绝 >1MB 的配置文件
     const raw = readFileSync(path, 'utf8')
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -73,7 +75,10 @@ export function loadSettings(projectDir: string, envOverrides?: Record<string, s
   // 环境变量覆盖（最高优先级）
   const overrides = envOverrides ?? process.env as Record<string, string>
   if (overrides.FLOOM_MODEL) merged.model = overrides.FLOOM_MODEL
-  if (overrides.FLOOM_MAX_TOKENS) merged.maxTokens = Number(overrides.FLOOM_MAX_TOKENS)
+  if (overrides.FLOOM_MAX_TOKENS) {
+    const v = Number(overrides.FLOOM_MAX_TOKENS)
+    merged.maxTokens = Number.isFinite(v) && v > 0 ? v : 8192
+  }
   if (overrides.FLOOM_CONTEXT_TOKENS) merged.contextTokens = Math.max(0, Number(overrides.FLOOM_CONTEXT_TOKENS) || 0)
   if (overrides.FLOOM_EFFORT) merged.effort = overrides.FLOOM_EFFORT
 
@@ -95,4 +100,47 @@ export function describeSettings(settings: FloomSettings): string {
     }
   }
   return lines.join('\n')
+}
+
+// 热重载支持
+
+/** 保存单个配置项到项目级 .floom/settings.json */
+export function saveSetting(projectDir: string, key: string, value: unknown): string {
+  const path = join(projectDir, '.floom', 'settings.json')
+  const current = loadJson(path) ?? {}
+  // 支持嵌套键（如 "permissions.yolo"）
+  const keys = key.split('.').filter(k => k !== '')
+  if (keys.length === 0) return 'ERROR: invalid key'
+  for (const k of keys) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+      return 'ERROR: invalid key (prototype pollution blocked)'
+    }
+  }
+  let obj = current
+  for (let i = 0; i < keys.length - 1; i++) {
+    const existing = obj[keys[i]]
+    if (existing === null || existing === undefined || typeof existing !== 'object' || Array.isArray(existing)) {
+      obj[keys[i]] = {}
+    }
+    obj = obj[keys[i]] as Record<string, unknown>
+  }
+  obj[keys[keys.length - 1]] = value
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(current, null, 2), 'utf8')
+    return `Saved ${key} = ${JSON.stringify(value)}`
+  } catch (e) {
+    return `ERROR: failed to save settings: ${(e as Error).message}`
+  }
+}
+
+/** 删除项目级配置文件，恢复默认值 */
+export function resetSettings(projectDir: string): string {
+  const path = join(projectDir, '.floom', 'settings.json')
+  try {
+    if (existsSync(path)) { unlinkSync(path); return 'Settings reset to defaults.' }
+    return 'No project settings to reset.'
+  } catch (e) {
+    return `ERROR: failed to reset settings: ${(e as Error).message}`
+  }
 }

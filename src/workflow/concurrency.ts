@@ -8,7 +8,9 @@ export class Semaphore {
   private running = 0
   private queue: Array<() => void> = []
 
-  constructor(private max: number = defaultConcurrency()) {}
+  constructor(private max: number = defaultConcurrency()) {
+    if (!Number.isFinite(max) || max < 1) this.max = defaultConcurrency()
+  }
 
   async acquire(): Promise<() => void> {
     if (this.running < this.max) {

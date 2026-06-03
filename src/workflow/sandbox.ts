@@ -149,3 +149,96 @@ export class NodeVmRuntime implements Runtime {
     }
   }
 }
+
+// —— IsolatedVmRuntime：真正的内存隔离沙箱（需 isolated-vm 可选依赖）——
+
+let _isolatedVmAvailable: boolean | null = null
+
+async function isIsolatedVmAvailable(): Promise<boolean> {
+  if (_isolatedVmAvailable !== null) return _isolatedVmAvailable
+  try { await import('isolated-vm'); _isolatedVmAvailable = true }
+  catch { _isolatedVmAvailable = false }
+  return _isolatedVmAvailable
+}
+
+export class IsolatedVmRuntime implements Runtime {
+  private pool: any[] = []
+  private memoryLimit: number
+  private cpuTimeout: number
+
+  constructor(opts?: { memoryLimit?: number; cpuTimeout?: number; poolSize?: number }) {
+    this.memoryLimit = opts?.memoryLimit ?? 128
+    this.cpuTimeout = opts?.cpuTimeout ?? 30_000
+  }
+
+  static async create(opts?: { memoryLimit?: number; cpuTimeout?: number; poolSize?: number }): Promise<IsolatedVmRuntime> {
+    if (!(await isIsolatedVmAvailable())) {
+      throw new Error(
+        'isolated-vm is not installed. Install it with: npm install isolated-vm\n' +
+        'To use node:vm (NOT a security sandbox) as a fallback, pass --unsafe-sandbox.',
+      )
+    }
+    return new IsolatedVmRuntime(opts)
+  }
+
+  async createContext(api: Record<string, unknown>): Promise<RuntimeContext> {
+    const ivm = await import('isolated-vm')
+    const isolate = new ivm.Isolate({ memoryLimit: this.memoryLimit })
+    try {
+    const context = await isolate.createContext()
+    const jail = context.global
+
+    const setJail = async (key: string, val: unknown) => {
+      if (typeof val === 'function') {
+        await jail.set(key, new ivm.Reference(val))
+      } else if (val && typeof val === 'object') {
+        // 逐属性 set 避免 ExternalCopy 混入 Reference 崩溃
+        for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+          if (typeof v === 'function') await jail.set(`${key}_${k}`, new ivm.Reference(v))
+          else await jail.set(`${key}_${k}`, new ivm.ExternalCopy(v).copyInto())
+        }
+      } else {
+        await jail.set(key, new ivm.ExternalCopy(val).copyInto())
+      }
+    }
+    for (const [key, val] of Object.entries(api)) await setJail(key, val)
+
+    let disposed = false
+    const cpuTimeout = this.cpuTimeout
+
+    return {
+      async run(fn: (...args: any[]) => any, ...args: any[]): Promise<unknown> {
+        if (disposed) throw new Error('RuntimeContext disposed')
+        for (let i = 0; i < args.length; i++) await setJail(`_a${i}`, args[i])
+        try {
+          const fnBody = fn.toString()
+          const argList = args.map((_, i) => `_a${i}`).join(',')
+          const script = await isolate.compileScript(
+            `(function(){const __fn=(${fnBody});return __fn(${argList});})()`,
+            { filename: 'workflow-agent.js' },
+          )
+          const result = await script.run(context, { timeout: cpuTimeout })
+          if (result && typeof result === 'object' && typeof result.copy === 'function') return result.copy()
+          return result
+        } finally {
+          for (let i = 0; i < args.length; i++) { try { await jail.delete(`_a${i}`) } catch {} }
+        }
+      },
+      async runInSandbox(fn: (...args: unknown[]) => unknown, ...args: unknown[]): Promise<unknown> {
+        if (disposed) throw new Error('RuntimeContext disposed')
+        const fnBody = fn.toString()
+        const script = await isolate.compileScript(
+          `(function(){const __fn=(${fnBody});return __fn.apply(null,${JSON.stringify(args)});})()`,
+          { filename: 'sandbox-eval.js' },
+        )
+        const result = await script.run(context, { timeout: cpuTimeout })
+        if (result && typeof result === 'object' && typeof result.copy === 'function') return result.copy()
+        return result
+      },
+      dispose: async () => {
+        if (!disposed) { disposed = true; try { isolate.dispose() } catch {} }
+      },
+    }
+    } catch { try { isolate.dispose() } catch {}; throw new Error('Failed to create isolated-vm context') }
+  }
+}

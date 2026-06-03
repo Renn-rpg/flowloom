@@ -27,7 +27,14 @@ export async function connectMcpServers(
         args: server.args,
         env: server.env,
         cwd: server.cwd,
-        onStderr: () => {}, // server stderr 仅日志，按 spec 不当错误、默认丢弃
+        onStderr: () => {},
+        onDisconnect: () => {
+          opts.onLog?.(`MCP "${name}" disconnected — reconnecting...`)
+          ;(async () => {
+            try { await transport.restart(); await client.initialize(); opts.onLog?.(`MCP "${name}" reconnected`) }
+            catch (e) { opts.onLog?.(`MCP "${name}" reconnect failed: ${(e as Error).message}`) }
+          })()
+        },
       })
       const client = new McpClient(transport, { clientName: 'flowloom', clientVersion: opts.clientVersion })
       await client.start()

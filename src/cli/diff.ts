@@ -74,9 +74,39 @@ export function diffLines(before: string, after: string): DiffOp[] {
 }
 
 const CONTEXT = 3
-const MAX_LINES = 80
+const MAX_LINES = process.stderr.columns ? Math.max(20, Math.floor(process.stderr.columns / 2)) : 80
 
-// 把 diff 渲染成彩色块：仅显示改动行 + 周围 CONTEXT 行，大段未改动折叠为 "…"。
+// —— Word-level diff：对修改行对做词级高亮 ——
+function wordDiff(delLine: string, addLine: string): { del: string; add: string } {
+  // 分词（保留空白分隔）
+  const delWords = delLine.split(/(\s+)/)
+  const addWords = addLine.split(/(\s+)/)
+
+  // LCS at word level
+  const n = delWords.length, m = addWords.length
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = delWords[i] === addWords[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+
+  // 回溯标记每个 word 的归属
+  const delOut: string[] = [], addOut: string[] = []
+  let i = 0, j = 0
+  while (i < n || j < m) {
+    if (i < n && j < m && delWords[i] === addWords[j]) {
+      delOut.push(delWords[i]); addOut.push(addWords[j]); i++; j++
+    } else if (j < m && (i >= n || dp[i + 1][j] < dp[i][j + 1])) {
+      addOut.push(chalk.bgGreen.black(addWords[j])); j++
+    } else if (i < n) {
+      delOut.push(chalk.bgRed.black(delWords[i])); i++
+    } else {
+      addOut.push(chalk.bgGreen.black(addWords[j])); j++
+    }
+  }
+  return { del: delOut.join(''), add: addOut.join('') }
+}
+
+// 把 diff 渲染成标准 unified diff 格式。
 // 无改动返回 ''（调用方据此跳过）。
 export function renderDiff(before: string, after: string, path: string): string {
   if (before === after) return ''
@@ -89,49 +119,76 @@ export function renderDiff(before: string, after: string, path: string): string 
   }
   if (adds === 0 && dels === 0) return ''
 
-  // 标记要保留的行：改动行及其前后 CONTEXT 行
-  const keep = new Array<boolean>(ops.length).fill(false)
+  // 标准 unified diff 头部
+  const out: string[] = [
+    chalk.bold(`--- a/${path}`),
+    chalk.bold(`+++ b/${path}`),
+  ]
+
+  // 将 ops 按连续改动分组为 hunks，每组带 3 行上下文
+  const hunks: { start: number; end: number }[] = []
+  let inHunk = false
   for (let i = 0; i < ops.length; i++) {
     if (ops[i].tag !== 'eq') {
-      for (let j = Math.max(0, i - CONTEXT); j <= Math.min(ops.length - 1, i + CONTEXT); j++) {
-        keep[j] = true
+      if (!inHunk) {
+        const start = Math.max(0, i - CONTEXT)
+        hunks.push({ start, end: 0 })
+        inHunk = true
+      }
+    } else if (inHunk) {
+      // 检查是否超出了上下文范围
+      let consecutiveEq = 0
+      for (let j = i; j < ops.length && ops[j].tag === 'eq'; j++) consecutiveEq++
+      if (consecutiveEq > CONTEXT * 2) {
+        hunks[hunks.length - 1].end = Math.min(ops.length - 1, i + CONTEXT - 1)
+        inHunk = false
+      }
+    }
+  }
+  if (inHunk) hunks[hunks.length - 1].end = ops.length - 1
+
+  let emitted = 0
+
+  for (const hunk of hunks) {
+    if (emitted >= MAX_LINES) { out.push(chalk.dim('   … (diff truncated)')); break }
+    // 计算 hunk 的行号范围
+    let oldStart = 0, newStart = 0
+    let oldCount = 0, newCount = 0
+    for (let i = 0; i <= hunk.end; i++) {
+      if (i < hunk.start) {
+        if (ops[i].tag === 'del' || ops[i].tag === 'eq') oldStart++
+        if (ops[i].tag === 'add' || ops[i].tag === 'eq') newStart++
+      } else {
+        if (ops[i].tag === 'del' || ops[i].tag === 'eq') oldCount++
+        if (ops[i].tag === 'add' || ops[i].tag === 'eq') newCount++
+      }
+    }
+    out.push(chalk.cyan(`@@ -${oldStart + 1},${oldCount} +${newStart + 1},${newCount} @@`))
+
+    for (let i = hunk.start; i <= hunk.end; i++) {
+      if (emitted >= MAX_LINES) { out.push(chalk.dim('   … (diff truncated)')); break }
+      const op = ops[i]
+      if (op.tag === 'eq') {
+        out.push(chalk.dim(` ${op.line}`))
+        emitted++
+      } else if (op.tag === 'del') {
+        // 检查下一个是否为 add → word-level diff
+        if (i + 1 < ops.length && ops[i + 1].tag === 'add') {
+          const wd = wordDiff(op.line, ops[i + 1].line)
+          out.push(chalk.red(`-${wd.del}`))
+          out.push(chalk.green(`+${wd.add}`))
+          i++ // 跳过已处理的 add 行
+          emitted += 2
+        } else {
+          out.push(chalk.red(`-${op.line}`))
+          emitted++
+        }
+      } else {
+        out.push(chalk.green(`+${op.line}`))
+        emitted++
       }
     }
   }
 
-  const out: string[] = [`  ${chalk.bold(path)}  ${chalk.green('+' + adds)} ${chalk.red('-' + dels)}`]
-  let oldNo = 0
-  let newNo = 0
-  let gap = false
-  let emitted = 0
-  let truncated = false
-  for (let i = 0; i < ops.length; i++) {
-    const op = ops[i]
-    if (op.tag === 'eq') {
-      oldNo++
-      newNo++
-    } else if (op.tag === 'del') {
-      oldNo++
-    } else {
-      newNo++
-    }
-    if (!keep[i]) {
-      gap = true
-      continue
-    }
-    if (gap) {
-      out.push(chalk.dim('   …'))
-      gap = false
-    }
-    if (emitted >= MAX_LINES) {
-      truncated = true
-      break
-    }
-    if (op.tag === 'eq') out.push(chalk.dim(`  ${String(newNo).padStart(4)}   ${op.line}`))
-    else if (op.tag === 'del') out.push(chalk.red(`  ${String(oldNo).padStart(4)} - ${op.line}`))
-    else out.push(chalk.green(`  ${String(newNo).padStart(4)} + ${op.line}`))
-    emitted++
-  }
-  if (truncated) out.push(chalk.dim('   … (diff truncated)'))
   return out.join('\n')
 }

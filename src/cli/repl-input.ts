@@ -8,9 +8,11 @@
 // 非 TTY（管道/CI）自动降级为普通 readline 逐行读取，行为与改造前一致。
 
 import { createInterface, type Interface } from 'node:readline/promises'
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { computeCompletions, type CompletionItem } from './completions.js'
-import { fmt } from './format.js'
+import { fmt, visualWidth } from './format.js'
 
 // ——— 按键解析 ———
 
@@ -29,8 +31,10 @@ export type Key =
   | { t: 'end' }
   | { t: 'ctrl-c' }
   | { t: 'ctrl-d' }
+  | { t: 'ctrl-r' }
   | { t: 'ctrl-o' }
   | { t: 'ctrl-e' }
+  | { t: 'newline' }  // Alt+Enter / Shift+Enter → 插入换行，不提交
   | { t: 'unknown' }
 
 // 把单个按键（或一段转义序列、或一段可见字符的粘贴）解析为语义按键。
@@ -48,8 +52,13 @@ export function decodeKey(s: string): Key {
       return { t: 'ctrl-c' }
     case '\x04':
       return { t: 'ctrl-d' }
+    case '\x12':
+      return { t: 'ctrl-r' }
     case '\x0f':
       return { t: 'ctrl-o' }
+    case '\x1b\r': // Alt+Enter → 插入换行
+    case '\x1b\x0d':
+      return { t: 'newline' }
     case '\x01': // Ctrl-A → 行首
       return { t: 'home' }
     case '\x05': // Ctrl-E → 展开全部细节
@@ -90,42 +99,19 @@ export function decodeKey(s: string): Key {
   return { t: 'unknown' }
 }
 
-// ——— 终端视觉宽度 ———
-// CJK / 全角字符在等宽终端中占 2 列，JavaScript .length 只计 1。
-// 光标定位和折行计算必须用视觉宽度，否则中文输入时光标「居中」。
-function visualWidth(s: string): number {
-  let w = 0
-  for (const ch of s) {
-    const cp = ch.codePointAt(0)!
-    // 控制字符（不渲染的）不计宽度
-    if (cp < 0x20 || cp === 0x7F) continue
-    // 宽字符范围：Hangul / CJK / 全角 / Emoji
-    if (
-      (cp >= 0x1100 && cp <= 0x115F) ||   // Hangul Jamo
-      (cp >= 0x2E80 && cp <= 0xA4CF) ||   // CJK Radicals .. Yi
-      (cp >= 0xAC00 && cp <= 0xD7AF) ||   // Hangul Syllables
-      (cp >= 0xF900 && cp <= 0xFAFF) ||   // CJK Compat
-      (cp >= 0xFE10 && cp <= 0xFE6F) ||   // Vertical / Small Form
-      (cp >= 0xFF01 && cp <= 0xFF60) ||   // Fullwidth ASCII
-      (cp >= 0xFFE0 && cp <= 0xFFE6) ||   // Fullwidth signs
-      (cp >= 0x1F300 && cp <= 0x1F9FF) || // Emoji & symbols
-      (cp >= 0x20000 && cp <= 0x3FFFF)     // CJK Ext-B+
-    ) {
-      w += 2
-    } else {
-      w += 1
-    }
-  }
-  return w
-}
-
 // ——— 状态机 ———
 
 export interface EditorState {
   buffer: string
-  cursor: number // 0..buffer.length
-  menuIndex: number // 下拉高亮项
-  dismissed: boolean // 用户按 Esc 暂时收起下拉（再编辑即恢复）
+  cursor: number
+  menuIndex: number
+  dismissed: boolean
+  historyIndex: number
+  savedBuffer: string
+  // Ctrl+R 搜索模式
+  searchMode: boolean
+  searchQuery: string
+  searchMatch: number // 当前匹配的索引
 }
 
 export type EditorAction = 'redraw' | 'submit' | 'cancel' | 'expand-one' | 'expand-all' | 'none'
@@ -136,69 +122,143 @@ export interface ReduceResult {
 }
 
 export function initialEditorState(): EditorState {
-  return { buffer: '', cursor: 0, menuIndex: 0, dismissed: false }
+  return { buffer: '', cursor: 0, menuIndex: 0, dismissed: false, historyIndex: -1, savedBuffer: '', searchMode: false, searchQuery: '', searchMatch: 0 }
 }
 
-// 编辑了 buffer 后的通用收尾：清掉 dismissed、把高亮复位到顶部。
 function edited(buffer: string, cursor: number): EditorState {
-  return { buffer, cursor, menuIndex: 0, dismissed: false }
+  return { buffer, cursor, menuIndex: 0, dismissed: false, historyIndex: -1, savedBuffer: '', searchMode: false, searchQuery: '', searchMatch: 0 }
 }
 
 // 纯状态转移：items 为「当前 buffer 对应的补全项」（由调用方先算好）。
-export function reduceKey(state: EditorState, key: Key, items: CompletionItem[]): ReduceResult {
+// history 为历史命令数组（可选），供 ↑↓ 导航。
+export function reduceKey(state: EditorState, key: Key, items: CompletionItem[], history?: string[]): ReduceResult {
   const menuOpen = items.length > 0 && !state.dismissed
   const len = state.buffer.length
   const redraw = (s: EditorState): ReduceResult => ({ state: s, action: 'redraw' })
   const none = (): ReduceResult => ({ state, action: 'none' })
 
+  // 非导航状态的字符输入 → 退出历史模式
+  const exitHistory = (next: EditorState): EditorState =>
+    key.t === 'char' || key.t === 'backspace' || key.t === 'delete'
+      ? { ...next, historyIndex: -1, savedBuffer: '' }
+      : next
+
   switch (key.t) {
+    case 'newline': {
+      // 插入字面换行符（不提交）
+      const b = state.buffer.slice(0, state.cursor) + '\n' + state.buffer.slice(state.cursor)
+      return redraw(exitHistory(edited(b, state.cursor + 1)))
+    }
     case 'char': {
+      if (state.searchMode && history) {
+        const q = state.searchQuery + key.ch
+        // 从当前匹配位置往前搜索
+        let found = -1
+        for (let i = state.searchMatch; i >= 0; i--) {
+          if (history[i].includes(q)) { found = i; break }
+        }
+        if (found === -1) {
+          for (let i = history.length - 1; i > state.searchMatch; i--) {
+            if (history[i].includes(q)) { found = i; break }
+          }
+        }
+        if (found !== -1) {
+          return redraw({ ...state, searchQuery: q, searchMatch: found, buffer: history[found], cursor: history[found].length })
+        }
+        return redraw({ ...state, searchQuery: q }) // 无匹配，保留查询
+      }
       const b = state.buffer.slice(0, state.cursor) + key.ch + state.buffer.slice(state.cursor)
-      return redraw(edited(b, state.cursor + key.ch.length))
+      return redraw(exitHistory(edited(b, state.cursor + key.ch.length)))
     }
     case 'backspace': {
       if (state.cursor === 0) return none()
       const b = state.buffer.slice(0, state.cursor - 1) + state.buffer.slice(state.cursor)
-      return redraw(edited(b, state.cursor - 1))
+      return redraw(exitHistory(edited(b, state.cursor - 1)))
     }
     case 'delete': {
       if (state.cursor >= len) return none()
       const b = state.buffer.slice(0, state.cursor) + state.buffer.slice(state.cursor + 1)
-      return redraw(edited(b, state.cursor))
+      return redraw(exitHistory(edited(b, state.cursor)))
     }
     case 'left':
-      return state.cursor > 0 ? redraw({ ...state, cursor: state.cursor - 1 }) : none()
+      return state.cursor > 0 ? redraw(exitHistory({ ...state, cursor: state.cursor - 1 })) : none()
     case 'right':
-      return state.cursor < len ? redraw({ ...state, cursor: state.cursor + 1 }) : none()
+      return state.cursor < len ? redraw(exitHistory({ ...state, cursor: state.cursor + 1 })) : none()
     case 'home':
-      return state.cursor > 0 ? redraw({ ...state, cursor: 0 }) : none()
+      return state.cursor > 0 ? redraw(exitHistory({ ...state, cursor: 0 })) : none()
     case 'end':
-      return state.cursor < len ? redraw({ ...state, cursor: len }) : none()
+      return state.cursor < len ? redraw(exitHistory({ ...state, cursor: len })) : none()
     case 'up':
-      if (!menuOpen) return none()
-      return redraw({ ...state, menuIndex: (state.menuIndex - 1 + items.length) % items.length })
+      if (menuOpen) {
+        return redraw({ ...state, menuIndex: (state.menuIndex - 1 + items.length) % items.length })
+      }
+      // 无菜单 → 历史导航
+      if (!history || history.length === 0) return none()
+      if (state.historyIndex === -1) {
+        // 首次 ↑：保存当前输入，回退到最新历史
+        const idx = history.length - 1
+        return redraw({ ...state, buffer: history[idx], cursor: history[idx].length, historyIndex: idx, savedBuffer: state.buffer })
+      }
+      if (state.historyIndex > 0) {
+        const idx = state.historyIndex - 1
+        return redraw({ ...state, buffer: history[idx], cursor: history[idx].length, historyIndex: idx })
+      }
+      return none()
     case 'down':
-      if (!menuOpen) return none()
-      return redraw({ ...state, menuIndex: (state.menuIndex + 1) % items.length })
+      if (menuOpen) {
+        return redraw({ ...state, menuIndex: (state.menuIndex + 1) % items.length })
+      }
+      if (state.historyIndex === -1) return none()
+      if (state.historyIndex < (history?.length ?? 0) - 1) {
+        const idx = state.historyIndex + 1
+        return redraw({ ...state, buffer: history![idx], cursor: history![idx].length, historyIndex: idx })
+      }
+      // 到达最新之后 ↓ → 恢复原始输入
+      return redraw({ ...state, buffer: state.savedBuffer, cursor: state.savedBuffer.length, historyIndex: -1, savedBuffer: '' })
+    case 'ctrl-r': {
+      if (!history || history.length === 0) return none()
+      if (!state.searchMode) {
+        return redraw({ ...state, searchMode: true, searchQuery: '', searchMatch: history.length - 1, savedBuffer: state.savedBuffer || state.buffer })
+      }
+      // 已在搜索模式中 → 跳转到下一个匹配
+      if (state.searchQuery) {
+        let idx = state.searchMatch - 1
+        for (let i = 0; i < history.length; i++) {
+          if (idx < 0) idx = history.length - 1
+          if (history[idx].includes(state.searchQuery)) {
+            return redraw({ ...state, searchMatch: idx, buffer: history[idx], cursor: history[idx].length })
+          }
+          idx--
+        }
+      }
+      return none()
+    }
     case 'tab': {
       if (!menuOpen) return none()
       const accepted = items[Math.min(state.menuIndex, items.length - 1)].replacement
       if (accepted === state.buffer) return none()
       return redraw(edited(accepted, accepted.length))
     }
+    case 'esc':
+      if (state.searchMode) {
+        return redraw({ ...state, searchMode: false, searchQuery: '', buffer: state.savedBuffer, cursor: state.savedBuffer.length })
+      }
+      return menuOpen ? redraw({ ...state, dismissed: true }) : none()
     case 'enter': {
+      if (state.searchMode) {
+        return { state: { ...state, searchMode: false, searchQuery: '' }, action: 'redraw' }
+      }
       if (menuOpen) {
         const accepted = items[Math.min(state.menuIndex, items.length - 1)].replacement
         if (accepted !== state.buffer) return redraw(edited(accepted, accepted.length))
       }
-      // 空文本不提交
       if (state.buffer.trim() === '') return none()
       return { state, action: 'submit' }
     }
-    case 'esc':
-      return menuOpen ? redraw({ ...state, dismissed: true }) : none()
     case 'ctrl-c':
-      // 空行 → 退出；否则清空当前输入（类 bash/Claude Code），再按一次空行退出
+      if (state.searchMode) {
+        return redraw({ ...state, searchMode: false, searchQuery: '', buffer: state.savedBuffer, cursor: state.savedBuffer.length })
+      }
       if (state.buffer === '') return { state, action: 'cancel' }
       return redraw(initialEditorState())
     case 'ctrl-d':
@@ -237,6 +297,7 @@ export class ReplReader {
   // 持久的 UTF-8 流式解码器：跨 data 事件拼接被截断的多字节字符（中文/Emoji 常见），
   // 避免 per-event chunk.toString('utf8') 把不完整的字节序列解为 U+FFFD 替换字符。
   private decoder: StringDecoder
+  private history: string[] = [] // 命令历史（去重连续相同）
 
   // 转义序列缓冲：终端高负载/PTY/SSH 下可能把 ESC 单独 flush 成一个 data 事件，
   // 下一个事件才带后续字节（如 '[A'）。缓冲 lone ESC 并用微任务等待续着，
@@ -262,6 +323,22 @@ export class ReplReader {
   close(): void {
     this.rl?.close()
     this.rl = null
+  }
+
+  // 从文件加载历史（JSONL 格式，每行一条命令）
+  loadHistory(path: string): void {
+    try {
+      const raw = readFileSync(path, 'utf8')
+      this.history = raw.split('\n').map(s => s.trim()).filter(Boolean)
+    } catch { /* 无文件/不可读 → 空历史 */ }
+  }
+
+  saveHistory(path: string): void {
+    try {
+      const recent = this.history.slice(-500)
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, recent.join('\n') + '\n', 'utf8')
+    } catch { /* 落盘失败不影响交互 */ }
   }
 
   // 求值提示符文案（支持动态函数，如计划模式切换 'floom(plan)> '）。
@@ -323,8 +400,13 @@ export class ReplReader {
         // ── 上边框 ──
         out.write(`${fmt.inputLine(tw)}\n`)
 
-        // ── ❯ 提示符 + 输入文本 ──
-        out.write(colored + st.buffer)
+        // ── 提示符 ──
+        if (st.searchMode) {
+          const searchPrompt = `(reverse-i-search\`${st.searchQuery}'): `
+          out.write(fmt.dim(searchPrompt) + st.buffer)
+        } else {
+          out.write(colored + st.buffer)
+        }
 
         // ── 下拉菜单 ──
         for (let i = 0; i < menu.length; i++) {
@@ -369,14 +451,20 @@ export class ReplReader {
 
       const apply = (key: Key): boolean => {
         const comp = computeCompletions(st.buffer)
-        const r = reduceKey(st, key, comp.items)
+        const r = reduceKey(st, key, comp.items, this.history)
         st = r.state
         switch (r.action) {
-          case 'submit':
+          case 'submit': {
             finalize()
             restore()
+            // 添加到历史（去重连续相同）
+            const trimmed = st.buffer.trim()
+            if (trimmed && this.history[this.history.length - 1] !== trimmed) {
+              this.history.push(trimmed)
+            }
             resolve(st.buffer)
             return true
+          }
           case 'cancel':
             finalize()
             restore()
@@ -436,9 +524,8 @@ export class ReplReader {
           apply(decodeKey(s))
           return
         }
-        // 多字符粘贴：把控制字符清理后作为字面文本一次插入，不再逐个字节过
-        // decodeKey，避免 Tab 在菜单打开时误补全、换行误提交。换行→空格以保持可读。
-        const cleaned = s.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s{2,}/g, ' ').trim()
+        // 多字符粘贴：换行保留为多行输入，其他控制字符替换为空格
+        const cleaned = s.replace(/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]/g, ' ').replace(/\s{2,}/g, ' ').trim()
         if (cleaned.length > 0) apply(decodeKey(cleaned))
       }
 

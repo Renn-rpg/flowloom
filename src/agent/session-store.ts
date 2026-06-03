@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { InternalMessage } from '../protocol/types.js'
 
@@ -81,5 +81,26 @@ export class SessionStore {
   latest(): PersistedSession | null {
     const metas = this.list()
     return metas.length > 0 ? this.load(metas[0].id) : null
+  }
+
+  delete(id: string): boolean {
+    const p = this.pathFor(id)
+    if (!p) return false
+    try { unlinkSync(p); return true } catch { return false }
+  }
+
+  // 自动清理：保留最近 keep 个会话，删除其余（按 updatedAt 倒序，最新在前）
+  cleanOldSessions(keep = 50): number {
+    const metas = this.list()
+    if (metas.length <= keep) return 0
+    let deleted = 0
+    for (const m of metas.slice(keep)) {
+      const p = this.pathFor(m.id)
+      if (p) {
+        try { unlinkSync(p) } catch { /* skip */ }
+        deleted++
+      }
+    }
+    return deleted
   }
 }

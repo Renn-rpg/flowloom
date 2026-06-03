@@ -44,28 +44,30 @@ describe('renderDiff', () => {
     expect(renderDiff('a\nb\n', 'a\nb\n', 'f.ts')).toBe('')
   })
 
-  it('shows +/- lines, counts, and the path', () => {
+  it('outputs unified diff format with ---/+++ header', () => {
     const out = strip(renderDiff('a\nb\nc\n', 'a\nB\nc\n', 'src/f.ts'))
-    expect(out).toContain('src/f.ts')
-    expect(out).toContain('+1')
-    expect(out).toContain('-1')
-    expect(out).toMatch(/- b/)
-    expect(out).toMatch(/\+ B/)
+    expect(out).toContain('--- a/src/f.ts')
+    expect(out).toContain('+++ b/src/f.ts')
+    expect(out).toContain('@@')
+    expect(out).toContain('-b')
+    expect(out).toContain('+B')
   })
 
   it('renders a brand-new file as all additions', () => {
     const out = strip(renderDiff('', 'line1\nline2\n', 'new.ts'))
-    expect(out).toContain('+2')
-    expect(out).toMatch(/\+ line1/)
-    expect(out).toMatch(/\+ line2/)
+    expect(out).toContain('--- a/new.ts')
+    expect(out).toContain('+++ b/new.ts')
+    expect(out).toContain('+line1')
+    expect(out).toContain('+line2')
   })
 
-  it('collapses large unchanged gaps with an ellipsis', () => {
+  it('groups changes into hunks with context', () => {
     const before = Array.from({ length: 50 }, (_, i) => `line${i}`).join('\n')
     const after = before.replace('line25', 'CHANGED25')
     const out = strip(renderDiff(before, after, 'big.ts'))
-    expect(out).toContain('…') // 折叠标记
-    expect(out).toMatch(/CHANGED25/)
-    expect(out).not.toMatch(/line0\b/) // 远离改动的行被折叠掉
+    expect(out).toContain('@@') // hunk header
+    expect(out).toContain('-line25')
+    expect(out).toContain('+CHANGED25')
+    expect(out).not.toMatch(/line0/) // far context not shown
   })
 })

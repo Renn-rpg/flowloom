@@ -213,5 +213,6 @@ export async function runTurn(
       })
     }
   }
-  return 'stopped: reached max iterations'
+  const usage = s.usage
+  return `stopped: reached max iterations (${s.maxIters} turns) — ${usage.inputTokens} in / ${usage.outputTokens} out / ${usage.cacheHitTokens} cache hit tokens. Consider simplifying the task or increasing maxIters.`
 }
