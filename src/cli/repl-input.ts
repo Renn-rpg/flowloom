@@ -66,8 +66,7 @@ export function decodeKey(s: string): Key {
       return { t: 'ctrl-r' }
     case '\x0f':
       return { t: 'ctrl-o' }
-    case '\x1b\r': // Alt+Enter → 插入换行
-    case '\x1b\x0d':
+    case '\x1b\r': // Alt+Enter → 插入换行 (\r === \x0d)
       return { t: 'newline' }
     case '\x01': // Ctrl-A → 行首
       return { t: 'home' }
@@ -118,10 +117,10 @@ export interface EditorState {
   dismissed: boolean
   historyIndex: number
   savedBuffer: string
-  // Ctrl+R 搜索模式
+  scrollOffset: number // 菜单滚动偏移（视窗起始索引）
   searchMode: boolean
   searchQuery: string
-  searchMatch: number // 当前匹配的索引
+  searchMatch: number
 }
 
 export type EditorAction = 'redraw' | 'submit' | 'cancel' | 'expand-one' | 'expand-all' | 'none'
@@ -132,11 +131,11 @@ export interface ReduceResult {
 }
 
 export function initialEditorState(): EditorState {
-  return { buffer: '', cursor: 0, menuIndex: 0, dismissed: false, historyIndex: -1, savedBuffer: '', searchMode: false, searchQuery: '', searchMatch: 0 }
+  return { buffer: '', cursor: 0, menuIndex: 0, dismissed: false, historyIndex: -1, savedBuffer: '', scrollOffset: 0, searchMode: false, searchQuery: '', searchMatch: 0 }
 }
 
 function edited(buffer: string, cursor: number): EditorState {
-  return { buffer, cursor, menuIndex: 0, dismissed: false, historyIndex: -1, savedBuffer: '', searchMode: false, searchQuery: '', searchMatch: 0 }
+  return { buffer, cursor, menuIndex: 0, dismissed: false, historyIndex: -1, savedBuffer: '', scrollOffset: 0, searchMode: false, searchQuery: '', searchMatch: 0 }
 }
 
 // 纯状态转移：items 为「当前 buffer 对应的补全项」（由调用方先算好）。
@@ -200,12 +199,11 @@ export function reduceKey(state: EditorState, key: Key, items: CompletionItem[],
       return state.cursor < len ? redraw(exitHistory({ ...state, cursor: len })) : none()
     case 'up':
       if (menuOpen) {
-        return redraw({ ...state, menuIndex: (state.menuIndex - 1 + items.length) % items.length })
+        const newIdx = state.menuIndex > 0 ? state.menuIndex - 1 : items.length - 1
+        return redraw({ ...state, menuIndex: newIdx, scrollOffset: 0 })
       }
-      // 无菜单 → 历史导航
       if (!history || history.length === 0) return none()
       if (state.historyIndex === -1) {
-        // 首次 ↑：保存当前输入，回退到最新历史
         const idx = history.length - 1
         return redraw({ ...state, buffer: history[idx], cursor: history[idx].length, historyIndex: idx, savedBuffer: state.buffer })
       }
@@ -216,7 +214,8 @@ export function reduceKey(state: EditorState, key: Key, items: CompletionItem[],
       return none()
     case 'down':
       if (menuOpen) {
-        return redraw({ ...state, menuIndex: (state.menuIndex + 1) % items.length })
+        const newIdx = state.menuIndex < items.length - 1 ? state.menuIndex + 1 : 0
+        return redraw({ ...state, menuIndex: newIdx, scrollOffset: 0 })
       }
       if (state.historyIndex === -1) return none()
       if (state.historyIndex < (history?.length ?? 0) - 1) {
@@ -432,7 +431,15 @@ export class ReplReader {
         if (st.menuIndex >= comp.items.length) {
           st.menuIndex = comp.items.length ? st.menuIndex % comp.items.length : 0
         }
-        const menu = open ? comp.items.slice(0, this.maxMenu) : []
+        // 滚动窗口：计算 scrollOffset 使 menuIndex 始终可见
+        const allItems = comp.items
+        const maxVis = this.maxMenu
+        let offset = st.scrollOffset
+        if (st.menuIndex < offset) offset = st.menuIndex
+        else if (st.menuIndex >= offset + maxVis) offset = st.menuIndex - maxVis + 1
+        const menu = open ? allItems.slice(offset, offset + maxVis) : []
+        const hasAbove = open && offset > 0
+        const hasBelow = open && offset + maxVis < allItems.length
 
         // 光标目前在输入区，上移 prevRenderHeight 行回到帧顶（上边框），然后清屏
         if (prevRenderHeight > 0) out.write(`\x1b[${prevRenderHeight}A`)
@@ -450,15 +457,17 @@ export class ReplReader {
         }
 
         // ── 下拉菜单 ──
+        if (hasAbove) out.write('\n' + fmt.dim(`  ↑ ${offset} more`))
         for (let i = 0; i < menu.length; i++) {
           const it = menu[i]
-          const ptr = i === st.menuIndex ? '❯ ' : '  '
+          const globalIdx = offset + i
+          const ptr = globalIdx === st.menuIndex ? '❯ ' : '  '
           const label = `${ptr}${it.label}`
-          // 描述文字占剩余空间：总宽度 - label视觉宽度 - 安全余量
           const maxDesc = Math.max(10, tw - visualWidth(label) - 4)
           const desc = it.desc.length > maxDesc ? it.desc.slice(0, maxDesc - 1) + '…' : it.desc
-          out.write('\n' + (i === st.menuIndex ? fmt.cyan(label + '  ' + desc) : fmt.dim(label + '  ' + desc)))
+          out.write('\n' + (globalIdx === st.menuIndex ? fmt.cyan(label + '  ' + desc) : fmt.dim(label + '  ' + desc)))
         }
+        if (hasBelow) out.write('\n' + fmt.dim(`  ↓ ${allItems.length - offset - maxVis} more`))
 
         // ── 下边框 ──
         out.write(`\n${fmt.inputLine(tw)}`)
