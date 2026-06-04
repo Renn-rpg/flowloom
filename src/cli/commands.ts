@@ -99,7 +99,35 @@ export function commandArgOptions(name: string): ArgOption[] | undefined {
 export function helpText(): string {
   const width = Math.max(...Object.values(SLASH_COMMANDS).map((s) => s.usage.length))
   const lines = Object.values(SLASH_COMMANDS).map((s) => `  ${s.usage.padEnd(width)}  ${s.desc}`)
-  return 'Slash commands:\n' + lines.join('\n')
+  const prefixes = [
+    '',
+    'Input prefixes:',
+    `  ${'!<command>'.padEnd(width)}  run a shell command directly (passthrough, no agent)`,
+    `  ${'#<text>'.padEnd(width)}  save a note as a persistent memory`,
+    `  ${'@<path>'.padEnd(width)}  reference a file/dir (type @ to pick)`,
+  ]
+  return 'Slash commands:\n' + lines.join('\n') + '\n' + prefixes.join('\n')
+}
+
+// REPL 行首特殊前缀(非 slash 命令):
+//   !<command> → 直接跑 shell 并回显(用户显式输入,不进 agent、不经 shell 审批)
+//   #<text>    → 把一句话存成持久记忆
+// 副作用(执行/落盘)在 cli.ts 完成;这里只做纯解析,便于单测。
+export type ReplDirective =
+  | { kind: 'bash'; command: string }
+  | { kind: 'memory'; text: string }
+
+export function parseReplDirective(line: string): ReplDirective | null {
+  const t = line.trim()
+  if (t.startsWith('!')) {
+    const command = t.slice(1).trim()
+    return command ? { kind: 'bash', command } : null // 裸 '!' 不触发
+  }
+  if (t.startsWith('#')) {
+    const text = t.slice(1).trim()
+    return text ? { kind: 'memory', text } : null // 裸 '#' 不触发
+  }
+  return null
 }
 
 export function parseSlash(line: string): { name: string; arg: string } | null {

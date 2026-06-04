@@ -160,6 +160,8 @@ floom run audit.mjs --budget 500000 --sandbox vm
 
 Real-time token streaming. Answers are rendered as **Markdown** in the terminal (headings, lists, blockquotes, emphasis) with **syntax-highlighted code blocks**. Type **`@`** to pop a file/dir picker and reference a path inline (`@src/cli.ts`). Press **`ESC`** any time during a response to interrupt the current turn and get the prompt back; `Ctrl-O` expands collapsed details.
 
+Input prefixes in the REPL: **`!cmd`** runs a shell command directly (passthrough), **`#note`** saves a persistent memory, **`@path`** references a file.
+
 ### 🛡️ Production Hardening
 
 - **Exponential backoff retry** — 429/5xx/network errors, configurable

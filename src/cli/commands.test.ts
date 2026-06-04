@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseSlash,
+  parseReplDirective,
   runSlash,
   helpText,
   commandArgOptions,
@@ -170,5 +171,35 @@ describe('commandArgOptions', () => {
     expect(commandArgOptions('plan')).toBeUndefined()
     expect(commandArgOptions('clear')).toBeUndefined()
     expect(commandArgOptions('bogus')).toBeUndefined()
+  })
+})
+
+describe('parseReplDirective', () => {
+  it('parses a ! bash passthrough', () => {
+    expect(parseReplDirective('!ls -la')).toEqual({ kind: 'bash', command: 'ls -la' })
+    expect(parseReplDirective('!  git status ')).toEqual({ kind: 'bash', command: 'git status' })
+  })
+
+  it('parses a # memory note', () => {
+    expect(parseReplDirective('#prefer tabs over spaces')).toEqual({ kind: 'memory', text: 'prefer tabs over spaces' })
+    expect(parseReplDirective('#  记住要跑测试 ')).toEqual({ kind: 'memory', text: '记住要跑测试' })
+  })
+
+  it('ignores a bare ! or # with no payload', () => {
+    expect(parseReplDirective('!')).toBeNull()
+    expect(parseReplDirective('#  ')).toBeNull()
+  })
+
+  it('returns null for normal prompts and slash commands', () => {
+    expect(parseReplDirective('explain this code')).toBeNull()
+    expect(parseReplDirective('/help')).toBeNull()
+    expect(parseReplDirective('a@b mentions')).toBeNull()
+  })
+
+  it('helpText documents the ! / # / @ input prefixes', () => {
+    const h = helpText()
+    expect(h).toContain('!<command>')
+    expect(h).toContain('#<text>')
+    expect(h).toContain('@<path>')
   })
 })

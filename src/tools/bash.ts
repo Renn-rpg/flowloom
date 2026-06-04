@@ -7,6 +7,23 @@ import { TOOL_OUTPUT_LIMIT } from '../config/constants.js'
 const exec = promisify(execFile)
 const SHELL_TIMEOUT_MS = Math.max(1000, Number(process.env.FLOOM_SHELL_TIMEOUT_MS) || 120_000)
 
+// 平台一致地执行一条 shell 命令(win32 用 pwsh,否则 bash),返回合并的 stdout+stderr(已截断)。
+// 供 run_shell 工具与 REPL 的「! 透传」复用。ok=false 表示非零退出/超时,output 以 'ERROR:' 开头。
+export async function execShell(cmd: string): Promise<{ ok: boolean; output: string }> {
+  const sh = process.platform === 'win32' ? 'pwsh' : 'bash'
+  const args = process.platform === 'win32' ? ['-NoProfile', '-Command', cmd] : ['-c', cmd]
+  try {
+    const { stdout, stderr } = await exec(sh, args, { maxBuffer: 10 * 1024 * 1024, timeout: SHELL_TIMEOUT_MS, killSignal: 'SIGTERM' })
+    return { ok: true, output: (stdout + stderr).slice(0, TOOL_OUTPUT_LIMIT) }
+  } catch (e: any) {
+    const timedOut = e.killed && e.signal === 'SIGTERM'
+    const prefix = timedOut ? `ERROR: command timed out after ${SHELL_TIMEOUT_MS}ms` : `ERROR: ${e.message}`
+    const out = typeof e.stdout === 'string' ? e.stdout : (e.stdout ? String(e.stdout) : '')
+    const err = typeof e.stderr === 'string' ? e.stderr : (e.stderr ? String(e.stderr) : '')
+    return { ok: false, output: `${prefix}\n${out}${err}`.slice(0, TOOL_OUTPUT_LIMIT) }
+  }
+}
+
 // manager 存在时支持 background:true（长跑命令后台执行，bash_output 轮询 / kill_shell 终止）。
 export function makeBashTool(shell: ShellPolicy = allowAllShell, manager?: BackgroundShells): Tool {
   return {
@@ -42,16 +59,7 @@ export function makeBashTool(shell: ShellPolicy = allowAllShell, manager?: Backg
           `Use bash_output({ id: "${id}" }) to read its output, kill_shell({ id: "${id}" }) to stop it.`
         )
       }
-      const sh = process.platform === 'win32' ? 'pwsh' : 'bash'
-      const args = process.platform === 'win32' ? ['-NoProfile', '-Command', cmd] : ['-c', cmd]
-      try { const { stdout, stderr } = await exec(sh, args, { maxBuffer: 10 * 1024 * 1024, timeout: SHELL_TIMEOUT_MS, killSignal: 'SIGTERM' }); return (stdout + stderr).slice(0, TOOL_OUTPUT_LIMIT) }
-      catch (e: any) {
-        const timedOut = e.killed && e.signal === 'SIGTERM'
-        const prefix = timedOut ? `ERROR: command timed out after ${SHELL_TIMEOUT_MS}ms` : `ERROR: ${e.message}`
-        const out = typeof e.stdout === 'string' ? e.stdout : (e.stdout ? String(e.stdout) : '')
-        const err = typeof e.stderr === 'string' ? e.stderr : (e.stderr ? String(e.stderr) : '')
-        return `${prefix}\n${out}${err}`.slice(0, TOOL_OUTPUT_LIMIT)
-      }
+      return (await execShell(cmd)).output
     },
   }
 }

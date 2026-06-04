@@ -24,7 +24,8 @@ import {
 import { selectMenu } from './cli/prompt.js'
 import { ReplReader } from './cli/repl-input.js'
 import { resolveEffortModel } from './cli/effort.js'
-import { runSlash, type SlashContext } from './cli/commands.js'
+import { runSlash, parseReplDirective, type SlashContext } from './cli/commands.js'
+import { execShell } from './tools/bash.js'
 import { BackgroundShells } from './tools/shell-manager.js'
 import { ToolRegistry } from './tools/registry.js'
 import { loadHooks, evaluatePreToolUse, evaluatePostToolUse, expandHookCommand } from './hooks/engine.js'
@@ -45,7 +46,7 @@ import { renderDiff } from './cli/diff.js'
 import { createMarkdownStream, type MarkdownStream } from './cli/markdown.js'
 import { createStatusBar, renderStatusBar } from './cli/status-bar.js'
 import { BlockManager } from './cli/blocks.js'
-import { MemoryStore } from './memory/store.js'
+import { MemoryStore, memorySlug, type MemoryEntry } from './memory/store.js'
 import { formatRecall } from './memory/recall.js'
 import { makeRememberTool } from './memory/tool.js'
 import { skillRegistry } from './skills/registry.js'
@@ -929,6 +930,38 @@ program
             if (raw === null) break
             line = raw.trim()
             if (line === '') continue
+          }
+          // 行首 ! / # 前缀:本地直接处理,不进 agent 循环、也不当 slash 命令。
+          const directive = parseReplDirective(line)
+          if (directive) {
+            if (directive.kind === 'bash') {
+              // ! 透传:用户显式输入的命令,直接跑并回显(不经 agent 的 shell 审批)。
+              stopActiveSpinner()
+              process.stderr.write(fmt.dim(`  $ ${directive.command}\n`))
+              const { output } = await execShell(directive.command)
+              const body = output.replace(/\s+$/, '')
+              if (body) process.stderr.write(body.split('\n').map((l) => '  ' + l).join('\n') + '\n')
+            } else {
+              // # 快捷记忆:存成持久 memory,并重建 system 让本会话即时可用。
+              const text = directive.text
+              const name = (memorySlug(text) || 'note') + '-' + Date.now().toString(36).slice(-5)
+              // description 必须单行(进 frontmatter 的 `description:` 行);多行 # 笔记折成一行
+              const oneLine = text.replace(/\s+/g, ' ').trim()
+              const entry: MemoryEntry = {
+                name,
+                description: oneLine.length > 80 ? oneLine.slice(0, 80) + '…' : oneLine,
+                type: 'user',
+                content: text,
+              }
+              try {
+                memoryStore.save(name, entry)
+                refreshSystem()
+                process.stderr.write(fmt.green(`  🧠 remembered as ${name}\n`))
+              } catch (e) {
+                process.stderr.write(fmt.red(`  ✗ could not save memory: ${(e as Error).message}\n`))
+              }
+            }
+            continue
           }
           const slash = runSlash(line, slashCtx)
           if (slash.handled) {

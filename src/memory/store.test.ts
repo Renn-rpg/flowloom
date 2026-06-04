@@ -2,7 +2,22 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { MemoryStore, formatMemory, type MemoryEntry } from './store.js'
+import { MemoryStore, formatMemory, memorySlug, type MemoryEntry } from './store.js'
+
+describe('memorySlug', () => {
+  it('kebab-cases the first few words of ASCII text', () => {
+    expect(memorySlug('Prefer tabs over spaces')).toBe('prefer-tabs-over-spaces')
+    expect(memorySlug('Use the staging DB, not prod!')).toBe('use-the-staging-db-not-prod')
+  })
+  it('caps at six words / 40 chars', () => {
+    expect(memorySlug('one two three four five six seven eight')).toBe('one-two-three-four-five-six')
+    expect(memorySlug('a').length).toBeLessThanOrEqual(40)
+  })
+  it('returns empty for text with no ASCII alphanumerics (caller falls back)', () => {
+    expect(memorySlug('记住要跑测试')).toBe('')
+    expect(memorySlug('！？。')).toBe('')
+  })
+})
 
 describe('MemoryStore', () => {
   let dir: string

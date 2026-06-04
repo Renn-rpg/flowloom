@@ -45,6 +45,20 @@ function parseMemoryFile(raw: string): MemoryEntry | null {
   return { name, description, type, content }
 }
 
+// 从一段文本生成 kebab-case slug(取前几个英数词)。纯函数。
+// CJK / 全是符号等无英数词的文本会得到空串——调用方需自行兜底(如拼时间戳)。
+export function memorySlug(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .split('-')
+    .filter(Boolean)
+    .slice(0, 6)
+    .join('-')
+    .slice(0, 40)
+}
+
 // 序列化为 frontmatter markdown 格式
 export function formatMemory(entry: MemoryEntry): string {
   return [
