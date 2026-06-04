@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — review & hardening pass
+## [0.13.0] — review, hardening & UI/UX pass
 
 ### Features
 - **流式 Markdown 渲染**(`src/cli/markdown.ts`):REPL + TTY 下把最终答案按 Markdown 渲染(标题/有序无序列表/引用/分隔线/粗体/斜体/行内 code/链接/删除线)。行缓冲流式;一次性/管道输出保持裸文本不污染
@@ -16,6 +16,7 @@
 - **路径限界识破软链逃逸**:`confineToRoot` 用 realpath 解析最近已存在祖先,拦截项目内软链/Windows junction 指向项目外的情形
 
 ### Bug Fixes
+- **Critical**:REPL **无限自动重试** —— `/retry` 用同一个 `retryLine` 变量既存「上一条 prompt」又当「待重试信号」,而 `runSlash('/retry')` 恒返回 `{retry:true}`,导致只要上一条非空就在循环顶部自激重试;每轮成功又重置它 → 对话一旦成功就停不下来。拆成 `lastLine`(每轮都记、不触发)+ `retryRequested`(仅 `/retry` 置位、消费一次),并抽纯函数 `takeReplInput` 加回归测试锁死「非空≠重试」语义
 - **High**:工作流全缓存恢复路径用量恒为 0 —— `closeRun` 不回写 `runs.total_*`,改为从 `agent_calls` 逐调用记录求和
 - 流式请求超时改为**空闲超时**(每 chunk 重置),稳定的长输出不再被「总时长」上限误杀
 - **窄终端 / CJK 折行下工具行与 Ctrl+O 展开错位**:`onToolResult` 的「上移覆盖运行行」改为按真实物理行数上移(`physicalRows` = `visualWidth`(去 ANSI)/列宽),`blocks.ts` 的 `cursorDelta` 同样计入折行;`dispatch_agent`(执行期已打印进度树)不再上移覆盖
@@ -28,7 +29,7 @@
 ### Refactor / Tests
 - 抽出 `src/cli/wiring.ts`(`registerGitTools` / `registerTaskTools` / `registerCronTools`),为 1100+ 行的 `cli.ts` 入口瘦身
 - task 单测改用 `os.tmpdir()` + `mkdtemp` + 清理,不再在仓库工作树留 `.floom-test-*` 产物;`.gitignore` 加防御行
-- 测试数 506 → 574(新增软链逃逸、DNS 重绑定、响应体上限、Markdown 渲染、语法高亮、ESC 中断、@文件补全、!/# 前缀、折行行数、后台计数/状态栏等用例)
+- 测试数 506 → 577(新增软链逃逸、DNS 重绑定、响应体上限、Markdown 渲染、语法高亮、ESC 中断、@文件补全、!/# 前缀、折行行数、后台计数/状态栏、/retry 不自激等用例)
 
 ## [0.10.0] — Unreleased
 

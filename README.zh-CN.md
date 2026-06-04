@@ -7,7 +7,7 @@
 **一个开源、DeepSeek 原生的 agentic 编码 CLI —— 以零头成本对标 Claude Code。**
 
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
-[![Version](https://img.shields.io/badge/version-0.12.0-blue)](https://github.com/Renn-rpg/deepseek-flowloom)
+[![Version](https://img.shields.io/badge/version-0.13.0-blue)](https://github.com/Renn-rpg/deepseek-flowloom)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 

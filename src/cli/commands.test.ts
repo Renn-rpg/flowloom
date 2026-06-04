@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   parseSlash,
   parseReplDirective,
+  takeReplInput,
   runSlash,
   helpText,
   commandArgOptions,
@@ -201,5 +202,21 @@ describe('parseReplDirective', () => {
     expect(h).toContain('!<command>')
     expect(h).toContain('#<text>')
     expect(h).toContain('@<path>')
+  })
+})
+
+describe('takeReplInput (/retry must not self-trigger)', () => {
+  it('reads new input when no retry was requested — even if lastLine is set', () => {
+    // 关键回归:仅仅 lastLine 非空绝不触发重试(否则每轮结束都自激 → 无限重试)
+    expect(takeReplInput({ retryRequested: false, lastLine: 'hello' })).toEqual({ source: 'read' })
+    expect(takeReplInput({ retryRequested: false, lastLine: '' })).toEqual({ source: 'read' })
+  })
+
+  it('replays the last line exactly once when retry was explicitly requested', () => {
+    expect(takeReplInput({ retryRequested: true, lastLine: 'do X' })).toEqual({ source: 'retry', line: 'do X' })
+  })
+
+  it('falls back to reading when retry is requested but there is nothing to retry', () => {
+    expect(takeReplInput({ retryRequested: true, lastLine: '' })).toEqual({ source: 'read' })
   })
 })

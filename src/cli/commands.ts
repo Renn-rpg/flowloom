@@ -130,6 +130,19 @@ export function parseReplDirective(line: string): ReplDirective | null {
   return null
 }
 
+// 决定本轮 REPL 取哪条输入。**纯函数**,锁定 /retry 语义:
+//   - retry 是「一次性」的:只有用户显式请求(retryRequested=true)且存在上一条 prompt 时才复用;
+//   - 仅仅 lastLine 非空**绝不**触发重试——否则每轮结束都会自激,造成无限重试(历史 bug)。
+// 真正的 IO(读新行)由调用方做;这里只返回决策。
+export type ReplInputChoice =
+  | { source: 'retry'; line: string }
+  | { source: 'read' }
+
+export function takeReplInput(s: { retryRequested: boolean; lastLine: string }): ReplInputChoice {
+  if (s.retryRequested && s.lastLine) return { source: 'retry', line: s.lastLine }
+  return { source: 'read' }
+}
+
 export function parseSlash(line: string): { name: string; arg: string } | null {
   const t = line.trim()
   if (!t.startsWith('/')) return null

@@ -24,7 +24,7 @@ import {
 import { selectMenu } from './cli/prompt.js'
 import { ReplReader } from './cli/repl-input.js'
 import { resolveEffortModel } from './cli/effort.js'
-import { runSlash, parseReplDirective, type SlashContext } from './cli/commands.js'
+import { runSlash, parseReplDirective, takeReplInput, type SlashContext } from './cli/commands.js'
 import { execShell } from './tools/bash.js'
 import { BackgroundShells } from './tools/shell-manager.js'
 import { ToolRegistry } from './tools/registry.js'
@@ -94,7 +94,7 @@ if (fsSkills.length > 0) {
   )
 }
 
-const VERSION = '0.12.0'
+const VERSION = '0.13.0'
 
 // 会话工厂、工具注册、权限策略等核心构造逻辑已提取到 session-factory.ts。
 // 以下仅保留 CLI 特有的输出函数 printSessions（写 stderr，依赖 sessionsText）。
@@ -937,15 +937,18 @@ program
         toggleStatus: () => { status.show = !status.show; return status.show },
       }
 
-      let retryLine = ''
+      // lastLine = 上一条 agent prompt(每轮都记,成功/失败均可供 /retry 重跑)。
+      // retryRequested = 仅当用户敲 /retry 时置位,消费一次。两者分离 → /retry 不会自激(修无限重试 bug)。
+      let lastLine = ''
+      let retryRequested = false
       let turnNum = 0
       try {
         for (;;) {
           let line: string
-          const slashRetry = retryLine && retryLine !== '/retry' ? runSlash('/retry', slashCtx) : null
-          if (slashRetry?.handled && slashRetry.retry) {
-            line = retryLine
-            retryLine = ''
+          const input = takeReplInput({ retryRequested, lastLine })
+          if (input.source === 'retry') {
+            retryRequested = false
+            line = input.line
             process.stderr.write(fmt.dim(`  ↻ retrying: ${line.slice(0, 80)}\n`))
           } else {
             const raw = await reader!.question()
@@ -989,7 +992,8 @@ program
           if (slash.handled) {
             if (slash.exit) break
             if (slash.retry) {
-              if (line !== '/retry') retryLine = line
+              if (lastLine) retryRequested = true
+              else process.stderr.write(fmt.dim('  nothing to retry yet\n'))
               continue
             }
             if (slash.interactiveSessions) {
@@ -1092,7 +1096,6 @@ program
             if (turnNum > 1) process.stderr.write(fmt.dim(`\n  ── turn ${turnNum} ──\n`))
             await runTurnWithUI(session, line, write, ui, armInterrupt)
             if (!title) title = line.slice(0, 60)
-            retryLine = line // 仅成功时保存
           } catch (e) {
             process.stderr.write(fmt.red(`\n  ✗ ${(e as Error).message ?? String(e)}\n`))
             if (session.messages.length > 0) {
@@ -1101,6 +1104,7 @@ program
               if (last.role === 'user') session.messages.pop()
             }
           }
+          lastLine = line // 记住本轮 prompt(成功或失败都可供 /retry 重跑);不触发自动重试
           process.stdout.write('\n')
           persist()
           updateStatus()
