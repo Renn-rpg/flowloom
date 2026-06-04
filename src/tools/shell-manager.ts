@@ -160,6 +160,13 @@ export class BackgroundShells {
     return [...this.tasks.values()].map((t) => ({ id: t.id, command: t.command, status: t.status }))
   }
 
+  // 仍在运行的后台任务数（供状态栏显示「N bg」提醒,避免起了 server 却忘记）。
+  runningCount(): number {
+    let n = 0
+    for (const t of this.tasks.values()) if (t.status === 'running') n++
+    return n
+  }
+
   // floom 退出时强制清理所有仍在跑的后台进程（整树）。退出在即，直接强制 + 据实标记。
   killAll(): void {
     for (const t of this.tasks.values()) {

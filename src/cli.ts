@@ -8,7 +8,7 @@ config({ path: join(homedir(), '.floom', '.env'), quiet: true })
 config({ quiet: true }) // $CWD/.env 覆盖全局
 
 import { Command } from 'commander'
-import { resolve, dirname } from 'node:path'
+import { resolve, dirname, basename } from 'node:path'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import type { Spinner } from './cli/spinner.js'
 import {
@@ -106,6 +106,12 @@ function printSessions(store: SessionStore): void {
 // 改完后展示 diff 的工具
 const DIFF_TOOLS = new Set(['edit_file', 'multi_edit', 'write_file'])
 
+// 设置终端窗口/标签标题(OSC 0)。仅 TTY 生效;传空串恢复默认。
+function setTerminalTitle(s: string): void {
+  if (process.stderr.isTTY) process.stderr.write(`\x1b]0;${s}\x07`)
+}
+const idleTitle = () => `floom · ${basename(process.cwd()) || 'floom'}`
+
 // 详情显隐状态：verbose=false 时不流式打印思考链（CoT），仅留 "Thinking…(Ns) · ctrl+o to expand"
 // 提示，完整 CoT 缓存在 lastReasoning，供提示符处按 ctrl+o 展开。verbose=true 则实时流式。
 export interface UiState {
@@ -132,6 +138,8 @@ async function runTurnWithUI(
   armInterrupt?: (onInterrupt: (kind: 'esc' | 'ctrl-c') => void) => () => void,
 ) {
   const startTime = Date.now()
+  // 终端标题:turn 进行中显示任务摘要(标签页可见在跑什么),结束在 finally 复位为 idle。
+  if (ui.hasRepl) setTerminalTitle(`floom ⠿ ${task.replace(/\s+/g, ' ').trim().slice(0, 50)}`)
   // 模型输出期间：隐藏光标。可中断模式下接管 stdin 监听 ESC(打断本轮)/Ctrl-C(退出);
   // 否则(一次性/管道)简单暂停 stdin 防 Enter 干扰。
   process.stderr.write('\x1b[?25l')
@@ -343,6 +351,7 @@ async function runTurnWithUI(
     stopThinking()
     stopBlinking()
     ui.lastReasoning = reasoningBuf
+    if (ui.hasRepl) setTerminalTitle(idleTitle()) // turn 结束:标题复位
     if (disarmInterrupt) disarmInterrupt() // 恢复 stdin 原状态(raw/listeners/paused)
     else if (!wasPaused) process.stdin.resume() // 恢复 REPL 输入
   }
@@ -612,6 +621,7 @@ program
         status.outputTokens = session.usage.outputTokens
         status.cacheHitTokens = session.usage.cacheHitTokens
         status.planMode = planState.active
+        status.backgroundTasks = shells.runningCount()
         const sb = renderStatusBar(status)
         if (sb) process.stderr.write(sb + '\n')
       }
@@ -873,6 +883,7 @@ program
         )
       }
       process.stderr.write(fmt.dim('  Type /help for slash commands.\n'))
+      setTerminalTitle(idleTitle()) // 进入 REPL:标题设为 idle
 
       // slash 命令的副作用边界：把活动会话/存储包装成 ctx 注入纯路由器
       let currentEffort = opts.effort
@@ -1096,6 +1107,7 @@ program
         }
       } finally {
         // 任何路径退出（正常 / runTurn 抛错）都清理：关后台进程、关 MCP、关 reader
+        setTerminalTitle('') // 退出:复位终端标题
         reader!.saveHistory(resolve(homedir(), '.floom', 'history.json'))
         reader!.close()
         cleanup()

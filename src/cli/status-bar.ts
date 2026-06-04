@@ -11,6 +11,8 @@ export interface StatusInfo {
   planMode: boolean
   sessionStart: Date
   show: boolean
+  // 仍在运行的后台 shell 数（run_shell background:true）。>0 时状态栏提示,避免遗忘。
+  backgroundTasks: number
 }
 
 export function createStatusBar(): StatusInfo {
@@ -22,6 +24,7 @@ export function createStatusBar(): StatusInfo {
     planMode: false,
     sessionStart: new Date(),
     show: true,
+    backgroundTasks: 0,
   }
 }
 
@@ -38,6 +41,7 @@ export function renderStatusBar(s: StatusInfo): string {
     fmt.cyan(s.model),
     `in:${fmt.yellow(String(s.inputTokens))} out:${fmt.yellow(String(s.outputTokens))}`,
     s.cacheHitTokens > 0 ? `cache:${fmt.yellow(String(s.cacheHitTokens))}` : '',
+    s.backgroundTasks > 0 ? fmt.green(`⏵ ${s.backgroundTasks} bg`) : '',
     s.planMode ? fmt.yellow(' PLAN') : '',
     fmt.dim(dur),
   ].filter(Boolean)

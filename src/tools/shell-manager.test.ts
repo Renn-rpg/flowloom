@@ -103,6 +103,19 @@ describe('BackgroundShells', () => {
     expect(mgr.list().every((t) => t.status === 'killed')).toBe(true)
   })
 
+  it('runningCount tracks only still-running tasks', () => {
+    const procs: ReturnType<typeof fakeProc>[] = []
+    const mgr = new BackgroundShells(() => { const p = fakeProc(); procs.push(p); return p as unknown as ChildProcess })
+    expect(mgr.runningCount()).toBe(0)
+    mgr.start('a')
+    mgr.start('b')
+    expect(mgr.runningCount()).toBe(2)
+    procs[0].emit('exit', 0) // a 结束
+    expect(mgr.runningCount()).toBe(1)
+    procs[1].emit('exit', 0)
+    expect(mgr.runningCount()).toBe(0)
+  })
+
   it('caps the task map, evicting the oldest finished task', () => {
     const procs: ReturnType<typeof fakeProc>[] = []
     const mgr = new BackgroundShells(() => { const p = fakeProc(); procs.push(p); return p as unknown as ChildProcess }, 2)

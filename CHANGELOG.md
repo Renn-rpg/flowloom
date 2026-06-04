@@ -8,6 +8,7 @@
 - **流式中途 ESC 打断**:模型输出/思考期间按 `ESC` 立即中止本轮、退回提示符(`AbortSignal` 透传 `runTurn → generate`,内部联动空闲超时 controller);中断后弹出未应答的 user 消息保持历史一致,可用 `/retry` 重跑。raw 模式下 `Ctrl-C` 仍保留退出语义(先恢复终端再退出,不残留 raw 模式)
 - **`@文件` 路径补全**:输入 `@` 弹出文件/目录下拉(目录在前、`node_modules`/`.git`/dist 等噪音与隐藏文件默认过滤),`Tab/Enter` 选中——目录补 `/` 可继续向下钻、文件补空格收尾。保留 `@` 作为文件引用标记;system prompt 已告知模型把 `@<path>` 当作「请读这个文件」。补全计算保持零 IO(目录列举依赖注入),邮箱式 `a@b` 不误触
 - **`!` shell 透传 + `#` 快捷记忆**:REPL 行首 `!<command>` 直接跑 shell 并回显(用户显式输入,不进 agent、不经 shell 审批);`#<text>` 把一句话存成持久 memory(自动生成 slug 名,description 单行化,本会话即时生效)。两者均为纯解析(`parseReplDirective`)+ cli 侧副作用;`/help` 与欢迎屏已列出 `!`/`#`/`@` 前缀。`run_shell` 工具与 `!` 共用抽出的 `execShell`
+- **终端标题 + 后台任务指示**:turn 进行中把任务摘要写进终端标题(`floom ⠿ …`,标签页可见在跑什么),空闲/退出复位;状态栏新增 `⏵N bg` 段——`run_shell background:true` 起的进程不再"隐形"(`BackgroundShells.runningCount()`)
 
 ### Security
 - **web_fetch DNS-rebinding 防护**:对域名做解析后 IP 校验(`assertHostPublic`),拦截解析到内网/环回地址的域名;重定向每一跳同样校验
@@ -27,7 +28,7 @@
 ### Refactor / Tests
 - 抽出 `src/cli/wiring.ts`(`registerGitTools` / `registerTaskTools` / `registerCronTools`),为 1100+ 行的 `cli.ts` 入口瘦身
 - task 单测改用 `os.tmpdir()` + `mkdtemp` + 清理,不再在仓库工作树留 `.floom-test-*` 产物;`.gitignore` 加防御行
-- 测试数 506 → 569(新增软链逃逸、DNS 重绑定、响应体上限、Markdown 渲染、语法高亮、ESC 中断、@文件补全、!/# 前缀、折行行数等用例)
+- 测试数 506 → 574(新增软链逃逸、DNS 重绑定、响应体上限、Markdown 渲染、语法高亮、ESC 中断、@文件补全、!/# 前缀、折行行数、后台计数/状态栏等用例)
 
 ## [0.10.0] — Unreleased
 
