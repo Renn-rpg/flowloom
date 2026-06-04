@@ -1,5 +1,6 @@
 // 可折叠区块系统：在终端输出中插入可折叠的内容块，支持 Ctrl+O 逐个展开、Ctrl+E 全部展开。
 // BlockManager 负责状态追踪，提供 ANSI 原位回溯展开所需的行数计算。
+import { physicalRows } from './format.js'
 
 export type BlockType =
   | 'thinking'      // 思考计时
@@ -83,25 +84,30 @@ export class BlockManager {
     return this.blocks.findIndex(b => b.state === 'collapsed')
   }
 
-  // 返回从光标位置上移到第 fromIndex 个块开头所需的 ANSI 上移行数。
-  // fromIndex 之后的块（包含 fromIndex）都需要被重绘。
-  cursorDelta(fromIndex: number): number {
+  // 返回从光标位置上移到第 fromIndex 个块开头所需的 ANSI 上移行数（= 物理行数）。
+  // fromIndex 之后的块（包含 fromIndex）都需要被重绘。传入终端列宽以正确计入折行
+  // （窄终端 / CJK 路径会让单条逻辑行占多物理行）；columns 省略(0)则按不折行算，保持旧行为。
+  cursorDelta(fromIndex: number, columns = 0): number {
     let lines = 0
     for (let i = fromIndex; i < this.blocks.length; i++) {
-      lines += this.visibleLines(i)
+      lines += this.visibleLines(i, columns)
     }
     return lines
   }
 
-  // 单块的可见行数
-  private visibleLines(index: number): number {
+  // 单块占用的物理行数（计入折行）。
+  private visibleLines(index: number, columns = 0): number {
     const b = this.blocks[index]
     if (!b) return 0
+    const rows = (line: string) => physicalRows(line, columns)
     if (b.state === 'expanded') {
-      return 1 + b.contentLines.length  // summaryLine + 完整内容
+      // summaryLine + 完整内容
+      return rows(b.summaryLine) + b.contentLines.reduce((n, l) => n + rows(l), 0)
     }
-    return 1 + b.previewLines.length + (b.contentLines.length > 0 ? 1 : 0)
-    // summaryLine + 预览行 + 折叠提示行 "... +N lines"
+    // summaryLine + 预览行 + (有内容时)折叠提示行 "… +N lines"（提示行短，恒占 1 行）
+    let n = rows(b.summaryLine) + b.previewLines.reduce((s, l) => s + rows(l), 0)
+    if (b.contentLines.length > 0) n += 1
+    return n
   }
 
   // 渲染从 fromIndex 开始的所有块为输出行数组

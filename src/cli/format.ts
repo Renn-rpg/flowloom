@@ -42,6 +42,21 @@ export const fmt = {
     fmt.dim(`  Thinking... (${(ms / 1000).toFixed(1)}s)`),
 }
 
+// 去除 ANSI SGR 颜色序列（chalk 产生的 \x1b[..m）。计算视觉宽度/物理行数前先剥掉，
+// 否则转义序列里的字符会被错算成可见宽度。
+const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g
+export function stripAnsi(s: string): string {
+  return s.replace(ANSI_SGR_RE, '')
+}
+
+// 一行文本在给定列宽下占用的「物理行数」：CJK/Emoji 占 2 列,超过列宽即折行。
+// 空行/窄到放不下也至少算 1 行。columns<=0(未知列宽)时按不折行处理。
+export function physicalRows(line: string, columns: number): number {
+  if (!Number.isFinite(columns) || columns <= 0) return 1
+  const w = visualWidth(stripAnsi(line))
+  return Math.max(1, Math.ceil(w / columns))
+}
+
 // 计算字符串在终端上的视觉宽度：CJK/全角/Emoji 占 2 列，其余占 1 列。
 // 从 repl-input.ts 移入，供 blocks.ts 和 format.ts 共享。
 export function visualWidth(s: string): number {

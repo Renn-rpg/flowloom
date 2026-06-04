@@ -40,7 +40,7 @@ import { SessionStore } from './agent/session-store.js'
 import { executeWorkflow } from './workflow/workflow-runtime.js'
 import { NodeVmRuntime, IsolatedVmRuntime } from './workflow/sandbox.js'
 import { createSpinner, stopActiveSpinner, stopBlinking } from './cli/spinner.js'
-import { fmt } from './cli/format.js'
+import { fmt, physicalRows } from './cli/format.js'
 import { showWelcome } from './cli/welcome.js'
 import { renderDiff } from './cli/diff.js'
 import { createMarkdownStream, type MarkdownStream } from './cli/markdown.js'
@@ -202,6 +202,8 @@ async function runTurnWithUI(
   let reasoningStreaming = false
   // —— diff：在工具执行前后读取文件内容做对比 ——
   let pendingDiff: { path: string; before: string } | null = null
+  // 运行态工具行占用的物理行数(窄终端/CJK 折行时 >1)；onToolResult 据此上移覆盖,避免错位。
+  let runningRows = 1
   // —— Markdown 渲染：仅在 REPL + TTY 时把最终答案当 Markdown 渲染（标题/列表/强调/代码块）。
   // 一次性/管道模式（write 写 stdout，供程序消费）保持裸文本,不做结构变换。每个文本突发一个 stream，
   // 被工具调用/turn 结束打断时 flush 残余行。
@@ -288,9 +290,11 @@ async function runTurnWithUI(
         // 存储工具输入供 Ctrl+T 展开
         ui.toolDetails.set(`t${totalTools}`, { input: { ...input } })
         if (thinkSpinner) thinkSpinner.text = `Running ${name}...`
-        const blockId = `t${totalTools}`
-        ui.blockManager.addBlock('tool-call', fmt.toolCompactRunning(name, args))
-        process.stderr.write(`\r\x1b[0K${fmt.toolCompactRunning(name, args)}\n`)
+        const runLine = fmt.toolCompactRunning(name, args)
+        // 记下运行行的物理行数:窄终端/CJK 路径会折行,onToolResult 须按真实行数上移覆盖。
+        runningRows = physicalRows(runLine, process.stderr.columns ?? 80)
+        ui.blockManager.addBlock('tool-call', runLine)
+        process.stderr.write(`\r\x1b[0K${runLine}\n`)
       },
       onToolResult: (name, ms, isError) => {
         totalTools++
@@ -298,8 +302,14 @@ async function runTurnWithUI(
         const line = isError
           ? fmt.toolCompactError(name, args, ms)
           : fmt.toolCompactDone(name, args, ms)
-        // ANSI 上移一行覆盖运行态，写最终结果
-        process.stderr.write(`\x1b[1A\r\x1b[0K${line}\n`)
+        if (name === 'dispatch_agent') {
+          // 子 agent 在执行期已打印进度树,运行行不再紧邻光标——不上移覆盖,直接另起一行写结果。
+          process.stderr.write(`${line}\n`)
+        } else {
+          // 上移到运行行顶部(运行行可能因窄终端/CJK 折行占多物理行)→ 清到屏幕底 → 写最终结果。
+          process.stderr.write(`\x1b[${runningRows}A\r\x1b[0J${line}\n`)
+        }
+        runningRows = 1
         // diff 折叠
         if (!isError && pendingDiff) {
           try {
@@ -473,8 +483,9 @@ program
         if (mode === 'all') ui.blockManager.expandAll()
 
         process.stderr.write('\x1b[?25l')
-        // ANSI 原位展开：上移到第一个折叠块，+2 补齐摘要行和状态栏
-        const upLines = ui.blockManager.cursorDelta(idx) + 2
+        // ANSI 原位展开：上移到第一个折叠块，+2 补齐摘要行和状态栏。
+        // 传列宽让 cursorDelta 计入折行(窄终端/CJK 路径下逻辑行会占多物理行,否则上移行数不足而错位)。
+        const upLines = ui.blockManager.cursorDelta(idx, process.stderr.columns ?? 80) + 2
         if (upLines > 0) process.stderr.write(`\x1b[${upLines}A`)
         process.stderr.write('\r\x1b[J') // 清除从光标到屏幕底
         const rendered = ui.blockManager.renderFrom(idx, false)

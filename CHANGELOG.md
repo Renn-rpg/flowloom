@@ -17,6 +17,7 @@
 ### Bug Fixes
 - **High**:工作流全缓存恢复路径用量恒为 0 —— `closeRun` 不回写 `runs.total_*`,改为从 `agent_calls` 逐调用记录求和
 - 流式请求超时改为**空闲超时**(每 chunk 重置),稳定的长输出不再被「总时长」上限误杀
+- **窄终端 / CJK 折行下工具行与 Ctrl+O 展开错位**:`onToolResult` 的「上移覆盖运行行」改为按真实物理行数上移(`physicalRows` = `visualWidth`(去 ANSI)/列宽),`blocks.ts` 的 `cursorDelta` 同样计入折行;`dispatch_agent`(执行期已打印进度树)不再上移覆盖
 
 ### CLI/UX & Docs
 - system prompt 补全工具清单:加入 `web_search` 并提示存在 git/task/remember/cron 工具家族(此前模型对它们「隐身」)
@@ -26,7 +27,7 @@
 ### Refactor / Tests
 - 抽出 `src/cli/wiring.ts`(`registerGitTools` / `registerTaskTools` / `registerCronTools`),为 1100+ 行的 `cli.ts` 入口瘦身
 - task 单测改用 `os.tmpdir()` + `mkdtemp` + 清理,不再在仓库工作树留 `.floom-test-*` 产物;`.gitignore` 加防御行
-- 测试数 506 → 558(新增软链逃逸、DNS 重绑定、响应体上限、Markdown 渲染、语法高亮、ESC 中断、@文件补全、!/# 前缀等用例)
+- 测试数 506 → 569(新增软链逃逸、DNS 重绑定、响应体上限、Markdown 渲染、语法高亮、ESC 中断、@文件补全、!/# 前缀、折行行数等用例)
 
 ## [0.10.0] — Unreleased
 
