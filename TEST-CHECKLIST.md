@@ -1,4 +1,4 @@
-# DeepSeek FlowLoom v0.12.0 — 功能测试清单
+# DeepSeek FlowLoom v0.13.0 — 功能测试清单
 
 > 实测前确保：`npm run build` 编译通过，`.env` 中已配置 `DEEPSEEK_API_KEY`
 
