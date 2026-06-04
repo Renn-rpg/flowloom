@@ -158,7 +158,7 @@ floom run audit.mjs --budget 500000 --sandbox vm
 
 ### ⚡ Streaming & Responsiveness
 
-Real-time token streaming. Answers are rendered as **Markdown** in the terminal (headings, lists, blockquotes, emphasis) with **syntax-highlighted code blocks**. Press **`ESC`** any time during a response to interrupt the current turn and get the prompt back; `Ctrl-O` expands collapsed details.
+Real-time token streaming. Answers are rendered as **Markdown** in the terminal (headings, lists, blockquotes, emphasis) with **syntax-highlighted code blocks**. Type **`@`** to pop a file/dir picker and reference a path inline (`@src/cli.ts`). Press **`ESC`** any time during a response to interrupt the current turn and get the prompt back; `Ctrl-O` expands collapsed details.
 
 ### 🛡️ Production Hardening
 

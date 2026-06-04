@@ -8,10 +8,20 @@
 // 非 TTY（管道/CI）自动降级为普通 readline 逐行读取，行为与改造前一致。
 
 import { createInterface, type Interface } from 'node:readline/promises'
-import { readFileSync, mkdirSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { readFileSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { computeCompletions, type CompletionItem } from './completions.js'
+
+// @ 文件补全的真实目录列举:相对 cwd 读目录;不可读返回空(computeCompletions 据此显示无菜单)。
+function listProjectDir(dirRel: string): { name: string; isDir: boolean }[] {
+  try {
+    return readdirSync(resolve(process.cwd(), dirRel || '.'), { withFileTypes: true })
+      .map((d) => ({ name: d.name, isDir: d.isDirectory() }))
+  } catch {
+    return []
+  }
+}
 import { fmt, visualWidth } from './format.js'
 
 // ——— 按键解析 ———
@@ -417,7 +427,7 @@ export class ReplReader {
       const tw = out.columns ?? 80
 
       const render = () => {
-        const comp = computeCompletions(st.buffer)
+        const comp = computeCompletions(st.buffer, { listDir: listProjectDir })
         const open = comp.items.length > 0 && !st.dismissed
         if (st.menuIndex >= comp.items.length) {
           st.menuIndex = comp.items.length ? st.menuIndex % comp.items.length : 0
@@ -481,7 +491,7 @@ export class ReplReader {
       }
 
       const apply = (key: Key): boolean => {
-        const comp = computeCompletions(st.buffer)
+        const comp = computeCompletions(st.buffer, { listDir: listProjectDir })
         const r = reduceKey(st, key, comp.items, this.history)
         st = r.state
         switch (r.action) {

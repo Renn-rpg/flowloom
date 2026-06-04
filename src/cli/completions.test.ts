@@ -67,3 +67,70 @@ describe('computeCompletions', () => {
     expect(computeCompletions('/bogus arg').items).toHaveLength(0)
   })
 })
+
+describe('computeCompletions — @ file completion', () => {
+  // 假目录树:'.' 根、'src' 子目录
+  const tree: Record<string, { name: string; isDir: boolean }[]> = {
+    '.': [
+      { name: 'src', isDir: true },
+      { name: 'node_modules', isDir: true },
+      { name: 'package.json', isDir: false },
+      { name: 'README.md', isDir: false },
+      { name: '.env', isDir: false },
+    ],
+    src: [
+      { name: 'cli.ts', isDir: false },
+      { name: 'cli', isDir: true },
+      { name: 'agent', isDir: true },
+    ],
+  }
+  const listDir = (d: string) => tree[d] ?? []
+  const deps = { listDir }
+
+  it('does nothing without a listDir dependency (stays pure)', () => {
+    expect(computeCompletions('see @src/')).toEqual({ kind: 'none', items: [] })
+  })
+
+  it('lists cwd entries on a bare @, dirs first, skipping noise and dotfiles', () => {
+    const c = computeCompletions('explain @', deps)
+    expect(c.kind).toBe('file')
+    const labels = c.items.map((i) => i.label)
+    // 目录在前(带 /)、隐藏文件与 node_modules 被过滤
+    expect(labels).toEqual(['src/', 'package.json', 'README.md'])
+  })
+
+  it('keeps the @ prefix and appends a space for files, slash for dirs', () => {
+    const c = computeCompletions('explain @', deps)
+    expect(c.items.find((i) => i.label === 'src/')?.replacement).toBe('explain @src/')
+    expect(c.items.find((i) => i.label === 'package.json')?.replacement).toBe('explain @package.json ')
+  })
+
+  it('descends into a subdirectory and filters by the name fragment', () => {
+    const c = computeCompletions('see @src/cl', deps)
+    expect(c.kind).toBe('file')
+    expect(c.items.map((i) => i.label)).toEqual(['cli/', 'cli.ts'])
+    expect(c.items.find((i) => i.label === 'cli.ts')?.replacement).toBe('see @src/cli.ts ')
+    expect(c.items.find((i) => i.label === 'cli/')?.replacement).toBe('see @src/cli/')
+  })
+
+  it('shows dotfiles only when the fragment starts with a dot', () => {
+    const c = computeCompletions('@.', deps)
+    expect(c.items.map((i) => i.label)).toEqual(['.env'])
+  })
+
+  it('does not trigger on an email-like a@b (no whitespace before @)', () => {
+    expect(computeCompletions('mail to a@b', deps)).toEqual({ kind: 'none', items: [] })
+  })
+
+  it('@ completion wins over slash logic when both could apply', () => {
+    const c = computeCompletions('/foo @src/', deps)
+    expect(c.kind).toBe('file')
+    expect(c.items.map((i) => i.label)).toEqual(['agent/', 'cli/', 'cli.ts'])
+  })
+
+  it('returns an empty file menu (not slash) when nothing matches the fragment', () => {
+    const c = computeCompletions('@zzz', deps)
+    expect(c.kind).toBe('file')
+    expect(c.items).toHaveLength(0)
+  })
+})
