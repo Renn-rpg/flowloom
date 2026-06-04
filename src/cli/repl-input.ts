@@ -472,10 +472,11 @@ export class ReplReader {
         // ── 下边框 ──
         out.write(`\n${fmt.inputLine(tw)}`)
 
-        // 计算本帧总视觉行数及光标位置
+        // 计算本帧总视觉行数（含 ↑/↓ 滚动指示器）
         const totalWidth = promptVis + visualWidth(st.buffer)
         const inputLines = Math.floor(totalWidth / tw) + 1
-        const totalRenderLines = 1 + inputLines + menu.length + 1
+        const indicatorLines = (hasAbove ? 1 : 0) + (hasBelow ? 1 : 0)
+        const totalRenderLines = 1 + inputLines + indicatorLines + menu.length + 1
 
         const cursorOffset = promptVis + visualWidth(st.buffer.slice(0, st.cursor))
         const cursorLine = Math.floor(cursorOffset / tw)
@@ -485,8 +486,8 @@ export class ReplReader {
         // 存为 prevRenderHeight，供下次 render 从光标位置回到帧顶
         prevRenderHeight = 1 + cursorLine
 
-        // 光标目前在下边框之后。上移到输入区光标位置。
-        const linesUpToCursor = menu.length + 1 + (inputLines - 1 - cursorLine)
+        // 光标目前在下边框之后。上移到输入区光标位置（经过 下边框 + 菜单 + 指示器 + 剩余输入行）
+        const linesUpToCursor = 1 + indicatorLines + menu.length + (inputLines - 1 - cursorLine)
         if (linesUpToCursor > 0) out.write(`\x1b[${linesUpToCursor}A`)
         out.write('\r')
         if (cursorCol > 0) out.write(`\x1b[${cursorCol}C`)
