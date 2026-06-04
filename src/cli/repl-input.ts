@@ -292,7 +292,7 @@ export interface ReplReaderOptions {
   promptText?: string | (() => string)
   colorPrompt?: (s: string) => string // 提示符着色（默认绿色 ❯）
   onExpand?: (mode: 'one' | 'all') => void // ctrl+o/ctrl+e 回调
-  maxMenu?: number // 下拉最多展示项数，默认 8
+  maxMenu?: number // 下拉最多展示项数，默认 12
 }
 
 export class ReplReader {
@@ -321,7 +321,7 @@ export class ReplReader {
     this.promptText = opts.promptText ?? '❯ '
     this.colorPrompt = opts.colorPrompt ?? ((s) => fmt.green(s))
     this.onExpand = opts.onExpand
-    this.maxMenu = opts.maxMenu ?? 8
+    this.maxMenu = opts.maxMenu ?? 12
     this.decoder = new StringDecoder('utf8')
   }
 
@@ -453,10 +453,11 @@ export class ReplReader {
         for (let i = 0; i < menu.length; i++) {
           const it = menu[i]
           const ptr = i === st.menuIndex ? '❯ ' : '  '
-          let text = `${ptr}${it.label}  ${it.desc}`
-          const maxWidth = tw - 2
-          if (text.length > maxWidth) text = text.slice(0, Math.max(1, maxWidth - 1)) + '…'
-          out.write('\n' + (i === st.menuIndex ? fmt.cyan(text) : fmt.dim(text)))
+          const label = `${ptr}${it.label}`
+          // 描述文字占剩余空间：总宽度 - label视觉宽度 - 安全余量
+          const maxDesc = Math.max(10, tw - visualWidth(label) - 4)
+          const desc = it.desc.length > maxDesc ? it.desc.slice(0, maxDesc - 1) + '…' : it.desc
+          out.write('\n' + (i === st.menuIndex ? fmt.cyan(label + '  ' + desc) : fmt.dim(label + '  ' + desc)))
         }
 
         // ── 下边框 ──
