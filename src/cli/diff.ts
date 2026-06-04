@@ -125,35 +125,32 @@ export function renderDiff(before: string, after: string, path: string): string 
     chalk.bold(`+++ b/${path}`),
   ]
 
-  // 将 ops 按连续改动分组为 hunks，每组带 3 行上下文
+  // 将 ops 按连续改动分组为 hunks，每组带 3 行上下文。O(n) 单遍扫描
   const hunks: { start: number; end: number }[] = []
-  let inHunk = false
+  let inHunk = false, eqRun = 0
   for (let i = 0; i < ops.length; i++) {
     if (ops[i].tag !== 'eq') {
       if (!inHunk) {
-        const start = Math.max(0, i - CONTEXT)
-        hunks.push({ start, end: 0 })
+        hunks.push({ start: Math.max(0, i - CONTEXT), end: 0 })
         inHunk = true
       }
+      eqRun = 0
     } else if (inHunk) {
-      // 检查是否超出了上下文范围
-      let consecutiveEq = 0
-      for (let j = i; j < ops.length && ops[j].tag === 'eq'; j++) consecutiveEq++
-      if (consecutiveEq > CONTEXT * 2) {
-        hunks[hunks.length - 1].end = Math.min(ops.length - 1, i + CONTEXT - 1)
+      eqRun++
+      if (eqRun > CONTEXT * 2) {
+        hunks[hunks.length - 1].end = Math.min(ops.length - 1, i - CONTEXT)
         inHunk = false
       }
     }
   }
   if (inHunk) hunks[hunks.length - 1].end = ops.length - 1
 
-  let emitted = 0
+  let emitted = 0, done = false
 
   for (const hunk of hunks) {
-    if (emitted >= MAX_LINES) { out.push(chalk.dim('   … (diff truncated)')); break }
+    if (done) break
     // 计算 hunk 的行号范围
-    let oldStart = 0, newStart = 0
-    let oldCount = 0, newCount = 0
+    let oldStart = 0, newStart = 0, oldCount = 0, newCount = 0
     for (let i = 0; i <= hunk.end; i++) {
       if (i < hunk.start) {
         if (ops[i].tag === 'del' || ops[i].tag === 'eq') oldStart++
@@ -166,7 +163,7 @@ export function renderDiff(before: string, after: string, path: string): string 
     out.push(chalk.cyan(`@@ -${oldStart + 1},${oldCount} +${newStart + 1},${newCount} @@`))
 
     for (let i = hunk.start; i <= hunk.end; i++) {
-      if (emitted >= MAX_LINES) { out.push(chalk.dim('   … (diff truncated)')); break }
+      if (emitted >= MAX_LINES) { out.push(chalk.dim('   … (diff truncated)')); done = true; break }
       const op = ops[i]
       if (op.tag === 'eq') {
         out.push(chalk.dim(` ${op.line}`))

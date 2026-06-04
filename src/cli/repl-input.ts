@@ -400,7 +400,7 @@ export class ReplReader {
     const input = this.input
     const out = this.out
     const promptText = this.resolvePrompt()
-    const promptVis = promptText.length
+    const promptVis = visualWidth(promptText)
     const colored = this.colorPrompt(promptText)
 
     return new Promise<string | null>((resolve) => {
@@ -428,9 +428,6 @@ export class ReplReader {
       const render = () => {
         const comp = computeCompletions(st.buffer, { listDir: listProjectDir })
         const open = comp.items.length > 0 && !st.dismissed
-        if (st.menuIndex >= comp.items.length) {
-          st.menuIndex = comp.items.length ? st.menuIndex % comp.items.length : 0
-        }
         // 滚动窗口：计算 scrollOffset 使 menuIndex 始终可见
         const allItems = comp.items
         const maxVis = this.maxMenu
@@ -476,8 +473,6 @@ export class ReplReader {
         const totalWidth = promptVis + visualWidth(st.buffer)
         const inputLines = Math.floor(totalWidth / tw) + 1
         const indicatorLines = (hasAbove ? 1 : 0) + (hasBelow ? 1 : 0)
-        const totalRenderLines = 1 + inputLines + indicatorLines + menu.length + 1
-
         const cursorOffset = promptVis + visualWidth(st.buffer.slice(0, st.cursor))
         const cursorLine = Math.floor(cursorOffset / tw)
         const cursorCol = cursorOffset % tw
@@ -503,6 +498,9 @@ export class ReplReader {
 
       const apply = (key: Key): boolean => {
         const comp = computeCompletions(st.buffer, { listDir: listProjectDir })
+        // 先 clamp menuIndex（防御越界），再传给 reduceKey
+        if (st.menuIndex >= comp.items.length) st.menuIndex = 0
+        if (st.menuIndex < 0) st.menuIndex = 0
         const r = reduceKey(st, key, comp.items, this.history)
         st = r.state
         switch (r.action) {
