@@ -188,6 +188,8 @@ export async function runTurn(
       throw e
     }
     callbacks.onThinkingDone?.(Date.now() - t0)
+    // generate 返回后立即检查中断：避免把已中断的响应消息推入会话
+    if (opts?.signal?.aborted) throw makeAbortError('turn aborted by user')
 
     s.usage.inputTokens += res.usage.inputTokens
     s.usage.outputTokens += res.usage.outputTokens
@@ -205,7 +207,14 @@ export async function runTurn(
       reasoningText: res.reasoningText,
       toolCalls: res.toolCalls,
     })
+    // 工具执行前保存消息栈快照，中断时回滚以清理孤立工具结果
+    const preToolsLen = s.messages.length
     for (const call of res.toolCalls) {
+      if (opts?.signal?.aborted) {
+        // 回滚：移除本轮的 assistant + 已执行的工具结果
+        s.messages.length = preToolsLen
+        throw makeAbortError('turn aborted by user')
+      }
       callbacks.onToolCall?.(call.name, call.input)
       const toolT0 = Date.now()
       // PreToolUse 闸（hooks）：被拦则不执行工具。使用 DENIED: 前缀区分于真正的工具执行错误，

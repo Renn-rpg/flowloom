@@ -1,18 +1,14 @@
-import chalk from 'chalk'
-
-// NO_COLOR / TERM=dumb / 非 TTY 管道 → 禁用颜色
-const useColor = !process.env.NO_COLOR && process.env.TERM !== 'dumb' && !!process.stderr.isTTY
-const c = (fn: (s: string) => string) => (s: string) => useColor ? fn(s) : s
+import { color } from './theme.js'
 
 export const fmt = {
-  dim: c(chalk.dim),
-  bold: c(chalk.bold),
-  green: c(chalk.green),
-  red: c(chalk.red),
-  yellow: c(chalk.yellow),
-  cyan: c(chalk.cyan),
-  blue: c(chalk.blue),
-  white: c(chalk.white),
+  dim: color('dim'),
+  bold: color('bold'),
+  green: color('green'),
+  red: color('red'),
+  yellow: color('yellow'),
+  cyan: color('cyan'),
+  blue: color('blue'),
+  white: color('white'),
 
   summary: (tokens: number, tools: number, ms: number) =>
     fmt.dim(`  ── ${tools} tools · ${tokens} tokens · ${(ms / 1000).toFixed(1)}s ──`),
@@ -26,17 +22,8 @@ export const fmt = {
   toolCompactError: (name: string, args: string, ms: number) =>
     `  ${fmt.red('●')} ${name}(${fmt.dim(args)})  ${fmt.dim(`(${(ms / 1000).toFixed(1)}s)`)}`,
 
-  collapsedHint: (count: number, unit: string) =>
-    fmt.dim(`  … +${count} ${unit} (ctrl+o to expand)`),
-
   inputLine: (width: number) =>
     fmt.white('─'.repeat(Math.max(0, width))),
-
-  toolDone: (name: string, ms: number) =>
-    `  ${fmt.green('✓')} ${name} ${fmt.dim(`(${(ms / 1000).toFixed(1)}s)`)}`,
-
-  toolError: (name: string, ms: number) =>
-    `  ${fmt.red('✗')} ${name} ${fmt.dim(`(${(ms / 1000).toFixed(1)}s)`)}`,
 
   thinking: (ms: number) =>
     fmt.dim(`  Thinking... (${(ms / 1000).toFixed(1)}s)`),
@@ -54,8 +41,22 @@ export const fmt = {
       }
     }
     const pad = Math.max(0, termW - visualWidth(stripAnsi(line)))
-    return c(chalk.bgHex('#2d2d2d'))(line + ' '.repeat(pad))
+    return color('user-msg-bg')(line + ' '.repeat(pad))
   },
+}
+
+// —— 消息类型标签 ——
+
+export type MsgType = 'user' | 'assistant' | 'tool' | 'system' | 'error'
+
+export function msgTypeLabel(type: MsgType): string {
+  switch (type) {
+    case 'user':      return color('dim')('[USER]')
+    case 'assistant': return color('blue')('[ASST]')
+    case 'tool':      return color('yellow')('[TOOL]')
+    case 'system':    return color('dim')('[SYS]')
+    case 'error':     return color('red')('[ERR]')
+  }
 }
 
 // 去除 ANSI SGR 颜色序列（chalk 产生的 \x1b[..m）。计算视觉宽度/物理行数前先剥掉，

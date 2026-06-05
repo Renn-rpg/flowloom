@@ -1,13 +1,14 @@
-import chalk from 'chalk'
+import { color } from './theme.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stripAnsi } from './format.js'
+import { DEFAULTS } from './keybindings/defaults.js'
 
 function terminalWidth(): number {
   return Math.min(80, Math.max(40, process.stderr.columns ?? 80))
 }
 
-const blue = chalk.hex('#4A90D9')
+const blue = color('brand')
 
 function detectProject(cwd: string): string[] {
   const items: string[] = []
@@ -61,7 +62,7 @@ export function showWelcome(opts: {
   const out: string[] = []
   out.push('')
   out.push(
-    blue('╭') + blue('─'.repeat(leftDash)) + chalk.blue.bold(title) + blue('─'.repeat(rightDash)) + blue('╮'),
+    blue('╭') + blue('─'.repeat(leftDash)) + color('bold')(color('brand')(title)) + blue('─'.repeat(rightDash)) + blue('╮'),
   )
   out.push(blankLine)
 
@@ -74,27 +75,31 @@ export function showWelcome(opts: {
   if (projectTypes.length > 0) rows.push(['Project: ', projectTypes.join(', ')])
   if (opts.safety) rows.push(['Safety:  ', opts.safety])
   for (const [label, value] of rows) {
-    out.push(border(chalk.dim(`  ${label}`) + chalk.green(value)))
+    out.push(border(color('dim')(`  ${label}`) + color('green')(value)))
   }
   out.push(blankLine)
+
+  const exKey = DEFAULTS.find(b => b.action === 'expand-one')?.key ?? 'ctrl+o'
+  const exAllKey = DEFAULTS.find(b => b.action === 'expand-all')?.key ?? 'ctrl+e'
+  const modeKey = DEFAULTS.find(b => b.action === 'cycle-mode')?.key ?? 'shift+tab'
 
   if (opts.isInteractive) {
     out.push(
       border(
-        chalk.dim('  ') + chalk.cyan('/') + chalk.dim(' menu  ·  ') +
-        chalk.cyan('Tab/↑↓') + chalk.dim(' pick  ·  ') + chalk.cyan('Ctrl+O/E') + chalk.dim(' expand'),
+        color('dim')('  ') + color('cyan')('/') + color('dim')(' menu  ·  ') +
+        color('cyan')('Tab/↑↓') + color('dim')(' pick  ·  ') + color('cyan')(exKey) + color('dim')('/') + color('cyan')(exAllKey) + color('dim')(' expand'),
       ),
     )
     out.push(
       border(
-        chalk.dim('  ') + chalk.cyan('Shift+Tab') + chalk.dim(' mode  ·  ') +
-        chalk.cyan('↓') + chalk.dim(' inspect agents  ·  ') + chalk.cyan('Esc') + chalk.dim(' interrupt'),
+        color('dim')('  ') + color('cyan')(modeKey) + color('dim')(' mode  ·  ') +
+        color('cyan')('↓') + color('dim')(' inspect agents  ·  ') + color('cyan')('Esc') + color('dim')(' interrupt'),
       ),
     )
     out.push(
       border(
-        chalk.dim('  ') + chalk.cyan('/exit') + chalk.dim(' quit  ·  ') +
-        chalk.cyan('Ctrl+C') + chalk.dim(' cancel  ·  ') + chalk.cyan('--yolo') + chalk.dim(' off'),
+        color('dim')('  ') + color('cyan')('/exit') + color('dim')(' quit  ·  ') +
+        color('cyan')('Ctrl+C') + color('dim')(' cancel  ·  ') + color('cyan')('--yolo') + color('dim')(' off'),
       ),
     )
     out.push(blankLine)

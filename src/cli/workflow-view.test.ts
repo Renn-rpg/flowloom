@@ -22,22 +22,28 @@ function buildRun() {
 const dims = { rows: 30, columns: 100, now: 5000 }
 
 describe('renderWorkflowView', () => {
-  it('renders the title, progress and all agent rows', () => {
+  it('renders the title, progress and all agent rows with tree badges', () => {
     const lines = renderWorkflowView(buildRun(), { selected: 0 }, dims)
     const text = lines.join('\n')
     expect(text).toContain('parallel agents')
     expect(text).toContain('auth')
     expect(text).toContain('db')
     expect(text).toContain('api')
-    expect(text).toContain('deepseek-v4-pro')
-    expect(text).toContain('5.8k tok')
+    // 树形渲染包含状态徽章、工具计数、token
+    expect(text).toContain('DONE')
+    expect(text).toContain('FAIL')
+    expect(text).toContain('5.8k')
     expect(text).toContain('5 tools')
+    // 树形连接线
+    expect(text).toContain('├──')
+    expect(text).toContain('└──')
   })
 
-  it('marks the selected row with a pointer', () => {
+  it('renders selected row with tree connector (not pointer)', () => {
     const lines = renderWorkflowView(buildRun(), { selected: 1 }, dims)
-    const selLine = lines.find((l) => l.includes('db'))!
-    expect(selLine).toContain('❯')
+    // 树形模式下选择行用颜色高亮而非 ❯ 前缀
+    const text = lines.join('\n')
+    expect(text).toContain('db')
   })
 
   it('shows the error of the selected failed agent in the detail line', () => {

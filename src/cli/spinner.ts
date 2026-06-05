@@ -1,4 +1,4 @@
-import chalk from 'chalk'
+import { color } from './theme.js'
 
 // 自驱动 thinking spinner——不依赖 ora 的内部渲染。
 //
@@ -41,6 +41,7 @@ export class Spinner {
 
   start(): this {
     if (!this.enabled) return this
+    if (this.timer) { clearInterval(this.timer); this.timer = null }
     this.render()
     // ~90ms/帧，自己驱动（不靠 ora 内部 interval）。unref 避免悬挂阻止进程退出——
     // turn 期间网络 Promise 已 keep-alive 事件循环，动画照常推进。
@@ -55,7 +56,7 @@ export class Spinner {
   private render(): void {
     if (!this.enabled) return
     // `\r` 回到行首 + `\x1b[2K` 清整行 + 当前帧 + 文本：逐帧覆盖同一行 → 闪烁动画。
-    this.stream.write(`\r\x1b[2K${chalk.cyan(FRAMES[this.idx])} ${this.text}`)
+    this.stream.write(`\r\x1b[2K${color('spinner')(FRAMES[this.idx])} ${this.text}`)
   }
 
   stop(): this {
@@ -71,6 +72,7 @@ export class Spinner {
 }
 
 export function createSpinner(text: string): Spinner {
+  if (active) active.stop()
   active = new Spinner(text).start()
   return active
 }

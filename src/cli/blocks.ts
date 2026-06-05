@@ -1,6 +1,6 @@
 // 可折叠区块系统：在终端输出中插入可折叠的内容块，支持 Ctrl+O 逐个展开、Ctrl+E 全部展开。
 // BlockManager 负责状态追踪，提供 ANSI 原位回溯展开所需的行数计算。
-import { physicalRows } from './format.js'
+import { physicalRows, type MsgType } from './format.js'
 
 export type BlockType =
   | 'thinking'      // 思考计时
@@ -16,6 +16,7 @@ export interface Block {
   summaryLine: string             // 折叠时显示的单行摘要
   previewLines: string[]          // 折叠时预览的前几行（可为空）
   contentLines: string[]          // 完整展开内容
+  messageType?: MsgType           // 可选消息类型（verbose 模式标签）
 }
 
 export class BlockManager {
@@ -124,7 +125,8 @@ export class BlockManager {
         out.push(...b.previewLines)
         const hidden = b.contentLines.length - b.previewLines.length
         if (hidden > 0) {
-          out.push(`  … +${hidden} lines (ctrl+o to expand)`)
+          const hintKey = 'ctrl+o' // 实际键名由调用方传递；默认保持向后兼容
+          out.push(`  … +${hidden} lines (${hintKey} to expand)`)
         }
       }
     }

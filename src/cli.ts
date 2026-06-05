@@ -41,7 +41,8 @@ import { makeWorkflowTool } from './workflow/workflow-tool.js'
 import type { WorkflowEvent } from './workflow/types.js'
 import { NodeVmRuntime, IsolatedVmRuntime } from './workflow/sandbox.js'
 import { createSpinner, stopActiveSpinner } from './cli/spinner.js'
-import { fmt, physicalRows } from './cli/format.js'
+import { fmt, physicalRows, msgTypeLabel } from './cli/format.js'
+import { DEFAULTS } from './cli/keybindings/defaults.js'
 import { showWelcome } from './cli/welcome.js'
 import { renderDiff } from './cli/diff.js'
 import { createMarkdownStream, type MarkdownStream } from './cli/markdown.js'
@@ -117,6 +118,11 @@ function setTerminalTitle(s: string): void {
 }
 const idleTitle = () => `floom · ${basename(process.cwd()) || 'floom'}`
 
+// 从默认按键绑定读取键名，避免硬编码
+const expandKey = DEFAULTS.find(b => b.action === 'expand-one')?.key ?? 'ctrl+o'
+const expandAllKey = DEFAULTS.find(b => b.action === 'expand-all')?.key ?? 'ctrl+e'
+const cycleModeKey = DEFAULTS.find(b => b.action === 'cycle-mode')?.key ?? 'shift+tab'
+
 // 详情显隐状态：verbose=false 时不流式打印思考链（CoT），仅留 "Thinking…(Ns) · ctrl+o to expand"
 // 提示，完整 CoT 缓存在 lastReasoning，供提示符处按 ctrl+o 展开。verbose=true 则实时流式。
 export interface UiState {
@@ -160,18 +166,18 @@ async function runTurnWithUI(
     disarmInterrupt = armInterrupt((kind) => {
       if (kind === 'esc') {
         interrupted = true
-        // 先恢复 stdin 再中断请求——即便流没立即抛错，终端也立即可用
-        if (disarmInterrupt) { disarmInterrupt(); disarmInterrupt = null }
+        // 立即打印中断提示（不等流返回），给用户即时反馈
+        process.stderr.write(fmt.yellow('\n  ⎋ interrupting…\n'))
+        // 只发中断信号，不提前恢复 stdin——等 finally 块统一处理，
+        // 避免 stdin 先恢复而流还在写导致竞态死机。
         turnAbort.abort()
       } else {
-        // Ctrl-C:raw 模式下不会自动触发 SIGINT。先 disarm 恢复 stdin(raw/echo),避免 process.exit
-        // 后终端残留 raw 模式;再转交既有退出处理器(cleanup + exit)。
         if (disarmInterrupt) disarmInterrupt()
         ;(process.emit as (event: string, ...args: unknown[]) => boolean)('SIGINT')
       }
     })
   } else {
-    process.stdin.pause() // 暂停 data 事件，不接收任何输入
+    process.stdin.pause()
   }
   let totalTools = 0
   // 本轮全部思考链（跨多轮 generate 累计）；turn 结束写入 ui.lastReasoning 供 ctrl+o 展开。
@@ -213,7 +219,7 @@ async function runTurnWithUI(
     thinkingReported = true
     // 折叠模式下若本轮产生了被隐藏的思考链且存在 REPL 提示符，提示用户可按 ctrl+o 展开。
     // 一次性模式下 hasRepl=false，不加该提示——进程马上就退出了，按键无处理器。
-    const hint = ui.hasRepl && !ui.verbose && reasoningBuf.length > 0 ? fmt.dim(' · ctrl+o to expand') : ''
+    const hint = ui.hasRepl && !ui.verbose && reasoningBuf.length > 0 ? fmt.dim(` · ${expandKey} to expand`) : ''
     process.stderr.write(fmt.thinking(Date.now() - thinkStart) + hint + '\n')
   }
 
@@ -236,29 +242,29 @@ async function runTurnWithUI(
     await runTurn(session, task, {
       beforeGenerate: awaitOverlay,
       onReasoning: (delta) => {
+        if (turnAbort.signal.aborted) return
         reasoningBuf += delta
-        // 折叠模式（默认）：不流式打印思考链，spinner 继续转；turn 结束后可 ctrl+o 展开。
         if (!ui.verbose) return
-        // verbose 模式：首块到达即停 spinner，打一行暗色表头，随后逐块暗色输出。
         if (!reasoningStreaming) {
           stopThinking()
-          thinkingReported = true // 思考流取代 "Thinking... (X.Xs)" 行
+          thinkingReported = true
           process.stderr.write(fmt.dim('  ✻ Thinking…\n'))
           reasoningStreaming = true
         }
         process.stderr.write(fmt.dim(delta))
       },
       onText: (delta) => {
+        if (turnAbort.signal.aborted) return
         if (!streaming) {
           stopThinking()
           if (reasoningStreaming) {
-            process.stderr.write('\n') // 思考块收尾换行，再开始最终答案
+            process.stderr.write('\n')
             reasoningStreaming = false
           } else {
-            reportThinking() // 无思考流的普通模型：补一行 "Thinking... (X.Xs)"
+            reportThinking()
           }
           streaming = true
-          // 语义分区：思考链与最终答案之间加区域标记
+          write(msgTypeLabel('assistant') + ' ')
           if (reasoningBuf.length > 0) {
             write(fmt.dim('\n  ── Response ──\n'))
           }
@@ -266,7 +272,7 @@ async function runTurnWithUI(
           else write('  ')
         }
         if (md) md.push(delta)
-        else write(delta.replace(/\n/g, '\n  ')) // 非 Markdown 路径：换行后保持缩进
+        else write(delta.replace(/\n/g, '\n  '))
       },
       onThinking: () => {
         flushMd() // 防御性：上一突发若未在工具调用处 flush，这里兜底
@@ -285,6 +291,7 @@ async function runTurnWithUI(
         reportThinking()
       },
       onContextTrim: (info) => {
+        if (turnAbort.signal.aborted) return
         const warn = info.overBudget ? ' (still over budget — last round alone is large)' : ''
         process.stderr.write(
           fmt.yellow(
@@ -293,6 +300,7 @@ async function runTurnWithUI(
         )
       },
       onContextCompact: (info) => {
+        if (turnAbort.signal.aborted) return
         process.stderr.write(
           fmt.dim(
             `  🗜 context compacted: summarized ${info.summarizedRounds} round(s) → ~${info.estimatedTokens} tok kept\n`,
@@ -300,6 +308,7 @@ async function runTurnWithUI(
         )
       },
       onToolCall: (name, input) => {
+        if (turnAbort.signal.aborted) return
         if (streaming) { flushMd(); write('\n'); streaming = false }
         const args = input.path ? String(input.path).slice(-40)
           : input.command ? String(input.command).slice(0, 50)
@@ -312,13 +321,14 @@ async function runTurnWithUI(
         // 存储工具输入供 Ctrl+T 展开
         ui.toolDetails.set(`t${totalTools}`, { input: { ...input } })
         if (thinkSpinner) thinkSpinner.text = `Running ${name}...`
-        const runLine = fmt.toolCompactRunning(name, args)
+        const runLine = msgTypeLabel('tool') + ' ' + fmt.toolCompactRunning(name, args)
         // 记下运行行的物理行数:窄终端/CJK 路径会折行,onToolResult 须按真实行数上移覆盖。
         runningRows = physicalRows(runLine, process.stderr.columns ?? 80)
         ui.blockManager.addBlock('tool-call', runLine)
         process.stderr.write(`\r\x1b[0K${runLine}\n`)
       },
       onToolResult: (name, ms, isError) => {
+        if (turnAbort.signal.aborted) return
         totalTools++
         const args = pendingDiff?.path ? String(pendingDiff.path).slice(-40) : ''
         const line = isError
@@ -362,20 +372,19 @@ async function runTurnWithUI(
     if (turnAbort.signal.aborted) interrupted = true
     else throw e
   } finally {
-    flushMd() // 任何退出路径(含异常中断)都 flush 已缓冲的 Markdown 行,避免丢字
+    flushMd()
     stopThinking()
     stopActiveSpinner()
     ui.lastReasoning = reasoningBuf
-    if (ui.hasRepl) setTerminalTitle(idleTitle()) // turn 结束:标题复位
-    if (disarmInterrupt) disarmInterrupt() // 恢复 stdin 原状态(raw/listeners/paused)
-    else if (!wasPaused) process.stdin.resume() // 恢复 REPL 输入
+    if (ui.hasRepl) setTerminalTitle(idleTitle())
+    if (disarmInterrupt) disarmInterrupt()
+    else if (!wasPaused) process.stdin.resume()
   }
 
   if (interrupted) {
     process.stderr.write(fmt.yellow('\n  ⎋ interrupted\n'))
-    if (ui.hasRepl) process.stderr.write('\x1b[?25h') // 恢复光标给 REPL
+    if (ui.hasRepl) process.stderr.write('\x1b[?25h')
     repaintFooter?.()
-    // 弹出本次未应答的 user 消息,保持历史一致(与出错路径一致)
     const last = session.messages[session.messages.length - 1]
     if (last?.role === 'user') session.messages.pop()
     return
@@ -686,6 +695,7 @@ program
         }
         return ctxCache.val
       }
+      const sessionStart = Date.now()
       const footerState = (): FooterState => {
         const run = tracker.current()
         return {
@@ -701,6 +711,8 @@ program
           rows: process.stderr.rows ?? 24,
           showBox: turnActive,
           backgroundTasks: shells.runningCount(),
+          cacheHitRatio: session.usage ? session.usage.cacheHitTokens / Math.max(1, session.usage.cacheHitTokens + session.usage.inputTokens) : 0,
+          sessionDurationMs: Date.now() - sessionStart,
         }
       }
       const footer = interactive && supportsFooter() ? new Footer(footerState) : null
@@ -1341,6 +1353,23 @@ program
             }
             continue
           }
+          // /ctx：上下文使用统计
+          if (line.trim() === '/ctx') {
+            const total = estimateTokens(session.system ?? '', session.messages, session.registry.specs())
+            const w = ctxWindow()
+            const pct = w > 0 ? Math.round((total / w) * 100) : 0
+            const barW = 20
+            const filled = Math.max(0, Math.min(barW, Math.round((pct / 100) * barW)))
+            const bar = fmt.green('█'.repeat(filled)) + fmt.dim('░'.repeat(barW - filled))
+            const msgs = session.messages.length
+            const cacheHit = session.usage?.cacheHitTokens ?? 0
+            process.stderr.write(
+              fmt.bold(`\n  Context: ${total} / ${w} tokens  `) + bar + fmt.dim(`  ${pct}%`) +
+              fmt.dim(`\n  ${msgs} messages · ${session.registry.specs().length} tools · ${cacheHit} cache hit tokens`) +
+              '\n\n'
+            )
+            continue
+          }
           const slash = runSlash(line, slashCtx)
           if (slash.handled) {
             if (slash.exit) break
@@ -1468,6 +1497,7 @@ program
             await runTurnWithUI(session, line, write, ui, armInterrupt, () => footer?.paint(), awaitOverlay)
             if (!title) title = line.slice(0, 60)
           } catch (e) {
+            process.stderr.write('\x1b[?25h') // 恢复光标（runTurnWithUI 中隐藏了）
             process.stderr.write(fmt.red(`\n  ✗ ${(e as Error).message ?? String(e)}\n`))
             if (session.messages.length > 0) {
               // 移除本次出错的 user 消息，保持状态一致

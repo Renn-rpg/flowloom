@@ -2,7 +2,7 @@
 // Tab/Enter 补全、ctrl+o 切换详情」等类 Claude Code 的体验。
 //
 // 分层（与 prompt.ts 同思路）：
-//   · decodeKey —— 把 stdin chunk 解析成语义按键（纯函数，可单测）
+//   · decodeKey —— 把 stdin chunk 解析成语义按键（纯函数，可单测）→ 已提取到 keybindings 模块
 //   · reduceKey —— 给定状态 + 按键 + 当前补全项，算出新状态与动作（纯函数，可单测）
 //   · ReplReader —— raw-mode IO 外壳：接管 stdin、渲染提示行 + 下拉、回调 ctrl+o
 // 非 TTY（管道/CI）自动降级为普通 readline 逐行读取，行为与改造前一致。
@@ -24,95 +24,11 @@ function listProjectDir(dirRel: string): { name: string; isDir: boolean }[] {
 }
 import { fmt, visualWidth, physicalRows } from './format.js'
 
-// ——— 按键解析 ———
+// ——— 按键解析（从 keybindings 模块重新导出，保持向后兼容）———
 
-export type Key =
-  | { t: 'char'; ch: string }
-  | { t: 'enter' }
-  | { t: 'backspace' }
-  | { t: 'delete' }
-  | { t: 'tab' }
-  | { t: 'shift-tab' }
-  | { t: 'esc' }
-  | { t: 'up' }
-  | { t: 'down' }
-  | { t: 'left' }
-  | { t: 'right' }
-  | { t: 'home' }
-  | { t: 'end' }
-  | { t: 'ctrl-c' }
-  | { t: 'ctrl-d' }
-  | { t: 'ctrl-r' }
-  | { t: 'ctrl-o' }
-  | { t: 'ctrl-e' }
-  | { t: 'newline' }  // Alt+Enter / Shift+Enter → 插入换行，不提交
-  | { t: 'unknown' }
-
-// 把单个按键（或一段转义序列、或一段可见字符的粘贴）解析为语义按键。
-export function decodeKey(s: string): Key {
-  switch (s) {
-    case '\r':
-    case '\n':
-      return { t: 'enter' }
-    case '\x7f':
-    case '\b':
-      return { t: 'backspace' }
-    case '\t':
-      return { t: 'tab' }
-    case '\x1b[Z': // Shift+Tab（CSI Z）→ 循环切换模式
-      return { t: 'shift-tab' }
-    case '\x03':
-      return { t: 'ctrl-c' }
-    case '\x04':
-      return { t: 'ctrl-d' }
-    case '\x12':
-      return { t: 'ctrl-r' }
-    case '\x0f':
-      return { t: 'ctrl-o' }
-    case '\x1b[13;2u': // Shift+Enter (kitty protocol)
-    case '\x1b[13u':   // Shift+Enter (bare CSI u)
-      return { t: 'newline' }
-    case '\x1b\r': // Alt+Enter → 插入换行 (\r === \x0d)
-      return { t: 'newline' }
-    case '\x01': // Ctrl-A → 行首
-      return { t: 'home' }
-    case '\x05': // Ctrl-E → 展开全部细节
-      return { t: 'ctrl-e' }
-    case '\x1b':
-      return { t: 'esc' }
-    case '\x1b[A':
-    case '\x1bOA':
-      return { t: 'up' }
-    case '\x1b[B':
-    case '\x1bOB':
-      return { t: 'down' }
-    case '\x1b[C':
-    case '\x1bOC':
-      return { t: 'right' }
-    case '\x1b[D':
-    case '\x1bOD':
-      return { t: 'left' }
-    case '\x1b[H':
-    case '\x1bOH':
-    case '\x1b[1~':
-      return { t: 'home' }
-    case '\x1b[F':
-    case '\x1bOF':
-    case '\x1b[4~':
-      return { t: 'end' }
-    case '\x1b[3~':
-      return { t: 'delete' }
-  }
-  // 可见字符（含多字符粘贴）：无控制字符、非转义序列、非 U+FFFD 替换字符
-  if (
-    s.length >= 1 &&
-    !s.startsWith('\x1b') &&
-    [...s].every((c) => c >= ' ' && c !== '\x7f' && c !== '�')
-  ) {
-    return { t: 'char', ch: s }
-  }
-  return { t: 'unknown' }
-}
+import { decodeKey, type Key } from './keybindings/index.js'
+export type { Key }
+export { decodeKey }
 
 // ——— 状态机 ———
 
@@ -346,6 +262,7 @@ export class ReplReader {
   }
 
   close(): void {
+    if (this.pendingEscTimer) { clearTimeout(this.pendingEscTimer); this.pendingEscTimer = null }
     this.rl?.close()
     this.rl = null
   }
@@ -363,17 +280,23 @@ export class ReplReader {
   }): () => void {
     const input = this.input
     if (!input.isTTY) return () => {}
+    // 只保存监听器用于恢复。不保存 raw mode / paused 状态——questionTTY 每次都会自己
+    // 重新设置 raw mode，我们乱改反而会导致 cooked-mode 冻结（必须按 Enter 才有响应）。
     const prevData = input.listeners('data') as ((c: Buffer) => void)[]
-    const wasRaw = input.isRaw ?? false
-    const wasPaused = input.isPaused()
+    const prevKeypress = input.listeners('keypress') as ((...args: any[]) => void)[]
     input.removeAllListeners('data')
-    let busy = false // 钻入视图打开期间，本监听器让出 stdin
-    let disarmed = false // 本轮已结束（disarm 被调用）
-    let escTimer: ReturnType<typeof setTimeout> | null = null // 缓冲 lone ESC，区分独立 ESC 与被拆分的转义序列
+    input.removeAllListeners('keypress')
+    let busy = false
+    let disarmed = false
+    let escTimer: ReturnType<typeof setTimeout> | null = null
     const restoreOriginal = () => {
-      input.setRawMode?.(wasRaw)
+      // 最小恢复：只移除我们的 onData，恢复原始监听器。
+      // 不碰 raw mode——questionTTY 下次调用会自己 setRawMode(true)。
+      // 不碰 paused——避免强制 resume 导致数据竞态。
+      input.removeAllListeners('data')
+      input.removeAllListeners('keypress')
       for (const l of prevData) input.on('data', l)
-      if (wasPaused) input.pause()
+      for (const l of prevKeypress) input.on('keypress', l)
     }
     const openInspect = () => {
       busy = true
@@ -405,10 +328,10 @@ export class ReplReader {
       }
       // Ctrl-C(0x03):raw 模式下不会自动产生 SIGINT,这里手动转交退出逻辑
       if (chunk.includes(0x03)) { handlers.onCtrlC(); return }
-      // 单字节 ESC：可能是独立 ESC(打断),也可能是被拆分的转义序列首字节。
-      // 缓冲 30ms——Windows ConPTY/pwsh 下序列字节间延迟可能 >12ms，导致误触。
+      // 单字节 ESC：模型输出期无转义序列产生，仅需区分 ↓(ESC [ B) 和纯 ESC。
+      // 12ms 足够 ConPTY 拼回被拆分的序列，远低于 30ms 人类感知阈值。
       if (chunk.length === 1 && chunk[0] === 0x1b) {
-        escTimer = setTimeout(() => { escTimer = null; handlers.onEsc() }, 30)
+        escTimer = setTimeout(() => { escTimer = null; handlers.onEsc() }, 12)
         return
       }
       dispatchSeq(chunk.toString('latin1'))
@@ -655,7 +578,7 @@ export class ReplReader {
               this.pendingEscTimer = null
               this.pendingEscBuf = []
               apply(decodeKey('\x1b'))
-            }, 10) // 10ms 内下一个 chunk 到达则拼接；否则当独立 ESC
+            }, 30) // 30ms——足够 ConPTY 拼回被拆分的序列（与 watchInterrupt 保持一致）
             this.pendingEscBuf = [chunk]
             return
           }

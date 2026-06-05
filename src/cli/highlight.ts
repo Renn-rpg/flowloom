@@ -5,11 +5,8 @@
 // 小状态跟踪跨行的块注释 /* */(C 家族常见)。三引号字符串等跨行结构按行处理(可接受的近似)。
 //
 // 设计要点:`tokenizeLine` 与颜色无关、可独立测试,且**保证 tokens 拼回原行**(不增删字符);
-// `highlightLine` 只是把 token 映射成颜色再拼接。颜色开关与 format.ts 一致。
-import chalk from 'chalk'
-
-const useColor = !process.env.NO_COLOR && process.env.TERM !== 'dumb' && !!process.stderr.isTTY
-const paint = (fn: (s: string) => string) => (s: string) => (useColor ? fn(s) : s)
+// `highlightLine` 只是把 token 映射成颜色再拼接。颜色通过 theme.ts 统一管理。
+import { color } from './theme.js'
 
 export type TokenType = 'comment' | 'string' | 'number' | 'keyword' | 'literal' | 'text'
 export interface Token {
@@ -174,17 +171,36 @@ export function tokenizeLine(line: string, lang: string, state: HlState): Token[
 }
 
 const HL: Record<TokenType, (s: string) => string> = {
-  comment: paint(chalk.gray),
-  string: paint(chalk.green),
-  number: paint(chalk.yellow),
-  keyword: paint(chalk.magenta),
-  literal: paint(chalk.yellow),
+  comment: color('gray'),
+  string: color('green'),
+  number: color('yellow'),
+  keyword: color('magenta'),
+  literal: color('yellow'),
   text: (s) => s,
 }
 
-// 高亮一行代码:tokenize → 上色 → 拼接。colors 关闭时返回与输入完全一致的字符串。
+import { HighlightCache } from './highlight-cache.js'
+
+const hlCache = new HighlightCache()
+
+// 高亮一行代码:先查 LRU 缓存,miss 时走 tokenize → 上色 → 拼接。
+// colors 关闭时返回与输入完全一致的字符串。
+// 注意:state.inBlock 跨行变化 → 带块注释状态的行不缓存（语义依赖前一行）。
+// 缓存命中时仍需检查行内是否含 /*（会开启块注释状态），若有则调用 tokenizeLine
+// 推进状态（仅用于副作用，丢弃返回值），避免缓存导致状态漂移。
 export function highlightLine(line: string, lang: string, state: HlState): string {
-  return tokenizeLine(line, lang, state)
+  if (!state.inBlock) {
+    const cached = hlCache.get(lang, line)
+    if (cached !== undefined) {
+      if (line.includes('/*')) tokenizeLine(line, lang, state) // 推进跨行状态
+      return cached
+    }
+  }
+  const rendered = tokenizeLine(line, lang, state)
     .map((t) => HL[t.type](t.text))
     .join('')
+  if (!state.inBlock) {
+    hlCache.set(lang, line, rendered)
+  }
+  return rendered
 }

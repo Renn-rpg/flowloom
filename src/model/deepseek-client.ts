@@ -46,11 +46,12 @@ export class DeepSeekClient implements ModelClient {
     // 外部中断:进入即检查,已 aborted 直接抛(如 ESC 在工具执行期触发,下一轮 generate 立即退出)。
     if (opts?.signal?.aborted) throw makeAbortError('request aborted')
     const body = toOpenAIRequest({ ...req, model: this.model })
-    const create = (extra: Record<string, unknown>) =>
-      this.openai.chat.completions.create({ ...(body as any), ...extra }, { timeout: this.timeoutMs })
+    // create 的两个参数：extra → 合并到请求体(JSON body)，reqOpts → 合并到 RequestOptions(fetch 层)
+    const create = (extra: Record<string, unknown>, reqOpts?: Record<string, unknown>) =>
+      this.openai.chat.completions.create({ ...(body as any), ...extra }, { timeout: this.timeoutMs, ...reqOpts })
     // 仅当调用方要看流式文本/思考链时才走 stream 分支
     if (!opts?.onText && !opts?.onReasoning) {
-      const resp = await withRetry(() => create({ stream: false, signal: opts?.signal }), { maxRetries: this.maxRetries })
+      const resp = await withRetry(() => create({ stream: false }, { signal: opts?.signal }), { maxRetries: this.maxRetries })
       return fromOpenAIResponse(resp)
     }
     // 流式请求：AbortController「空闲超时」——连接阶段与相邻 chunk 之间最多等 timeoutMs。
@@ -66,11 +67,18 @@ export class DeepSeekClient implements ModelClient {
     }
     resetIdle() // 覆盖连接阶段
     try {
-      const stream: any = await create({ stream: true, stream_options: { include_usage: true }, signal: ac.signal })
+      const stream: any = await create({ stream: true, stream_options: { include_usage: true } }, { signal: ac.signal })
       const acc = new StreamAccumulator()
-      for await (const chunk of stream) {
-        resetIdle() // 收到数据 → 续命
-        const { text, reasoning } = acc.addChunk(chunk)
+      // Promise.race：让 ESC 中断立即终止迭代，不等下一个 chunk
+      const aborted = new Promise<never>((_, reject) => {
+        ac.signal.addEventListener('abort', () => reject(makeAbortError('stream aborted')), { once: true })
+      })
+      const iterator = stream[Symbol.asyncIterator]()
+      while (true) {
+        const { done, value } = await Promise.race([iterator.next(), aborted])
+        if (done) break
+        resetIdle()
+        const { text, reasoning } = acc.addChunk(value)
         if (text) opts.onText?.(text)
         if (reasoning) opts.onReasoning?.(reasoning)
       }

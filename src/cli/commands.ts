@@ -56,6 +56,7 @@ export const SLASH_COMMANDS: Record<string, SlashSpec> = {
   clear: { usage: '/clear', desc: 'clear conversation history (reset context)' },
   compact: { usage: '/compact', desc: 'summarize older history into a synopsis to free up context' },
   usage: { usage: '/usage', desc: 'show token usage this session' },
+  ctx: { usage: '/ctx', desc: 'show context breakdown by category (system/messages/tools/MCP/memory/skills)' },
   save: { usage: '/save', desc: 'save the session now' },
   sessions: { usage: '/sessions', desc: 'list saved sessions in this project' },
   memory: { usage: '/memory', desc: 'list persistent memories' },

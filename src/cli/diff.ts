@@ -1,4 +1,7 @@
-import chalk from 'chalk'
+import { color } from './theme.js'
+import { DiffCache } from './diff-cache.js'
+
+const diffCache = new DiffCache()
 
 type DiffTag = 'eq' | 'del' | 'add'
 export interface DiffOp {
@@ -78,6 +81,8 @@ const MAX_LINES = process.stderr.columns ? Math.max(20, Math.floor(process.stder
 
 // —— Word-level diff：对修改行对做词级高亮 ——
 function wordDiff(delLine: string, addLine: string): { del: string; add: string } {
+  const cached = diffCache.get(delLine, addLine)
+  if (cached) return cached
   // 分词（保留空白分隔）
   const delWords = delLine.split(/(\s+)/)
   const addWords = addLine.split(/(\s+)/)
@@ -96,14 +101,16 @@ function wordDiff(delLine: string, addLine: string): { del: string; add: string 
     if (i < n && j < m && delWords[i] === addWords[j]) {
       delOut.push(delWords[i]); addOut.push(addWords[j]); i++; j++
     } else if (j < m && (i >= n || dp[i + 1][j] < dp[i][j + 1])) {
-      addOut.push(chalk.bgGreen.black(addWords[j])); j++
+      addOut.push(color('diff-add-bg')(addWords[j])); j++
     } else if (i < n) {
-      delOut.push(chalk.bgRed.black(delWords[i])); i++
+      delOut.push(color('diff-del-bg')(delWords[i])); i++
     } else {
-      addOut.push(chalk.bgGreen.black(addWords[j])); j++
+      addOut.push(color('diff-add-bg')(addWords[j])); j++
     }
   }
-  return { del: delOut.join(''), add: addOut.join('') }
+  const result = { del: delOut.join(''), add: addOut.join('') }
+  diffCache.set(delLine, addLine, result)
+  return result
 }
 
 // 把 diff 渲染成标准 unified diff 格式。
@@ -121,8 +128,8 @@ export function renderDiff(before: string, after: string, path: string): string 
 
   // 标准 unified diff 头部
   const out: string[] = [
-    chalk.bold(`--- a/${path}`),
-    chalk.bold(`+++ b/${path}`),
+    color('diff-file')(`--- a/${path}`),
+    color('diff-file')(`+++ b/${path}`),
   ]
 
   // 将 ops 按连续改动分组为 hunks，每组带 3 行上下文。O(n) 单遍扫描
@@ -160,28 +167,28 @@ export function renderDiff(before: string, after: string, path: string): string 
         if (ops[i].tag === 'add' || ops[i].tag === 'eq') newCount++
       }
     }
-    out.push(chalk.cyan(`@@ -${oldStart + 1},${oldCount} +${newStart + 1},${newCount} @@`))
+    out.push(color('diff-hunk')(`@@ -${oldStart + 1},${oldCount} +${newStart + 1},${newCount} @@`))
 
     for (let i = hunk.start; i <= hunk.end; i++) {
-      if (emitted >= MAX_LINES) { out.push(chalk.dim('   … (diff truncated)')); done = true; break }
+      if (emitted >= MAX_LINES) { out.push(color('diff-context')('   … (diff truncated)')); done = true; break }
       const op = ops[i]
       if (op.tag === 'eq') {
-        out.push(chalk.dim(` ${op.line}`))
+        out.push(color('diff-context')(` ${op.line}`))
         emitted++
       } else if (op.tag === 'del') {
         // 检查下一个是否为 add → word-level diff
         if (i + 1 < ops.length && ops[i + 1].tag === 'add') {
           const wd = wordDiff(op.line, ops[i + 1].line)
-          out.push(chalk.red(`-${wd.del}`))
-          out.push(chalk.green(`+${wd.add}`))
+          out.push(color('diff-del')(`-${wd.del}`))
+          out.push(color('diff-add')(`+${wd.add}`))
           i++ // 跳过已处理的 add 行
           emitted += 2
         } else {
-          out.push(chalk.red(`-${op.line}`))
+          out.push(color('diff-del')(`-${op.line}`))
           emitted++
         }
       } else {
-        out.push(chalk.green(`+${op.line}`))
+        out.push(color('diff-add')(`+${op.line}`))
         emitted++
       }
     }

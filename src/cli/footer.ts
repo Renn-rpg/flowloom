@@ -39,6 +39,8 @@ export interface FooterState {
   showBox?: boolean // 模型输出期：在页脚顶部画一个静态输入框，使「对话框一直存在」
   inputHint?: string // 静态框内提示（默认 'esc to interrupt'）
   backgroundTasks?: number
+  cacheHitRatio?: number  // 0-1，缓存命中占比
+  sessionDurationMs?: number // 会话已运行时长
 }
 
 // 模型输出期要在页脚里画静态输入框所需的最低终端高度（框 3 行 + 状态/模式 2 行 + 至少 5 行正文）。
@@ -113,6 +115,14 @@ export function composeStatusLine(s: FooterState): string {
   const extrasCol: string[] = []
   if (s.effort) { extras.push(`effort:${s.effort}`); extrasCol.push(fmt.dim(`effort:${s.effort}`)) }
   if (s.backgroundTasks && s.backgroundTasks > 0) { extras.push(`${s.backgroundTasks} bg`); extrasCol.push(fmt.green(`${s.backgroundTasks} bg`)) }
+  if (s.cacheHitRatio !== undefined && s.cacheHitRatio > 0.2) {
+    const pct = Math.round(s.cacheHitRatio * 100)
+    extras.push(`cache:${pct}%`); extrasCol.push(fmt.dim(`cache:${pct}%`))
+  }
+  if (s.sessionDurationMs !== undefined && s.sessionDurationMs > 60_000) {
+    const dur = fmtDuration(s.sessionDurationMs)
+    extras.push(dur); extrasCol.push(fmt.dim(dur))
+  }
   const extraRaw = extras.length ? `  │  ${extras.join(' · ')}` : ''
   const extraCol = extrasCol.length ? fmt.dim('  │  ') + extrasCol.join(fmt.dim(' · ')) : ''
 

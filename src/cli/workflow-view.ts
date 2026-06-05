@@ -9,6 +9,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { fmt, visualWidth, stripAnsi, fmtDuration, fmtTokens } from './format.js'
 import { decodeKey, type Key } from './repl-input.js'
 import type { RunGroup, AgentRow } from './agent-tracker.js'
+import { renderAgentTree, type AgentTreeNode, type AgentStatus } from './agent-tree.js'
 
 export interface ViewState {
   selected: number
@@ -111,16 +112,21 @@ export function renderWorkflowView(
   }
   const end = Math.min(total, start + bodyRows)
   if (start > 0) out.push(fmt.dim(`  ↑ ${start} more`))
-  const labelW = Math.min(28, Math.max(...run.rows.map((r) => visualWidth(r.label)), 8))
-  for (let i = start; i < end; i++) {
-    const r = run.rows[i]
-    const sel = i === s.selected
-    const ptr = sel ? '❯ ' : '  '
-    const el = fmtDuration((r.endedAt ?? dims.now) - r.startedAt)
-    const tail = `${fmtTokens(r.outputTokens)} tok · ${r.toolCalls} tools · ${el}`
-    const cur = r.status === 'running' && r.currentTool ? fmt.dim(` ${r.currentTool}…`) : ''
-    const body = `${ptr}${statusIcon(r.status)} ${padVisual(r.label, labelW)}  ${fmt.dim(r.model)}  ${fmt.dim(tail)}${cur}`
-    out.push(clip(sel ? fmt.cyan(stripAnsi(body)) : body, cols))
+  // agent 树形渲染（使用 agent-tree 模块）
+  const visibleRows = run.rows.slice(start, end)
+  const nodes: AgentTreeNode[] = visibleRows.map((r, i) => ({
+    id: r.id,
+    label: r.label,
+    status: (r.status === 'failed' ? 'error' : r.status === 'queued' ? 'queued' : r.status === 'running' ? 'running' : 'done') as AgentStatus,
+    toolCount: r.toolCalls,
+    tokens: r.outputTokens,
+    elapsedMs: (r.endedAt ?? dims.now) - r.startedAt,
+  }))
+  const treeLines = renderAgentTree(nodes, { maxWidth: cols, showBadges: true, showTokens: true, showToolCounts: true })
+  for (let i = 0; i < treeLines.length; i++) {
+    const idx = start + i
+    const sel = idx === s.selected
+    out.push(clip(sel ? fmt.cyan(stripAnsi(treeLines[i])) : treeLines[i], cols))
   }
   if (end < total) out.push(fmt.dim(`  ↓ ${total - end} more`))
 

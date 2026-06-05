@@ -4,26 +4,26 @@
 // 分隔线）天然是行向的，这样最稳；行内强调（粗体/斜体/行内 code/链接/删除线）在整行落定时解析。
 // 代价是「当前未完成的行」要等换行才显示（逐行而非逐字），这是终端 Markdown 流式的通行取舍。
 //
-// 颜色开关与 format.ts 一致（NO_COLOR / TERM=dumb / 非 TTY 时退化为纯结构变换，不输出 ANSI）。
+// 颜色通过 theme.ts 统一管理。
 // 代码块样式集中在 `codeBlock`，P0-2 语法高亮可直接替换它，无需改其它逻辑。
-import chalk from 'chalk'
+import { color } from './theme.js'
 import { highlightLine, makeHlState, type HlState } from './highlight.js'
 import { visualWidth, stripAnsi } from './format.js'
+import { MarkdownCache } from './markdown-cache.js'
 
-const useColor = !process.env.NO_COLOR && process.env.TERM !== 'dumb' && !!process.stderr.isTTY
-const paint = (fn: (s: string) => string) => (s: string) => (useColor ? fn(s) : s)
+const mdCache = new MarkdownCache()
 
 const C = {
-  bold: paint(chalk.bold),
-  italic: paint(chalk.italic),
-  boldItalic: paint(chalk.bold.italic),
-  dim: paint(chalk.dim),
-  code: paint(chalk.yellow), // 行内 code
-  heading: paint(chalk.bold.cyan),
-  link: paint(chalk.cyan.underline),
-  strike: paint(chalk.strikethrough),
-  quote: paint(chalk.dim),
-  bullet: paint(chalk.cyan),
+  bold: color('bold'),
+  italic: color('italic'),
+  boldItalic: color('bold-italic'),
+  dim: color('dim'),
+  code: color('code'),
+  heading: color('heading'),
+  link: color('link'),
+  strike: color('strike'),
+  quote: color('quote'),
+  bullet: color('bullet'),
 }
 
 // 占位符前后哨兵：用 NUL 包裹序号保护行内 code（模型几乎不会输出 NUL，不会与正文「空格+数字」误撞）。
@@ -31,9 +31,12 @@ const C = {
 const NUL = String.fromCharCode(0)
 const restoreRe = new RegExp(NUL + '(\\d+)' + NUL, 'g')
 
-// 行内强调渲染。先抽出行内 code 用占位符保护（避免其中的 * _ ~ 被当成强调），最后还原。
+// 行内强调渲染。先查 LRU 缓存，miss 时走正则替换流程。
+// 先抽出行内 code 用占位符保护（避免其中的 * _ ~ 被当成强调），最后还原。
 // chalk 产生的 ANSI 序列里不含 markdown 标记字符，故按优先级多次 replace 不会相互破坏。
 export function renderInline(text: string): string {
+  const cached = mdCache.get(text)
+  if (cached !== undefined) return cached
   const codeSpans: string[] = []
   let s = text.replace(/`([^`]+)`/g, (_m, code: string) => {
     codeSpans.push(C.code(code))
@@ -52,6 +55,7 @@ export function renderInline(text: string): string {
   s = s.replace(/~~([^~]+)~~/g, (_m, t: string) => C.strike(t))
   // 还原行内 code
   s = s.replace(restoreRe, (_m, i: string) => codeSpans[Number(i)] ?? '')
+  mdCache.set(text, s)
   return s
 }
 
@@ -115,7 +119,7 @@ function parseAligns(sep: string): TableAlign[] {
 }
 
 // 渲染缓存好的表
-function renderTable(rows: string[], aligns: TableAlign[], useColor: boolean): string {
+function renderTable(rows: string[], aligns: TableAlign[]): string {
   // 第一行是表头
   const headerCells = rows[0].replace(/^\s*\||\|\s*$/g, '').split('|').map(c => renderInline(c.trim()))
   const bodyRows = rows.slice(1).map(r =>
@@ -143,8 +147,8 @@ function renderTable(rows: string[], aligns: TableAlign[], useColor: boolean): s
     return cell + ' '.repeat(d) // left
   }
 
-  const dim = (s: string) => useColor ? chalk.dim(s) : s
-  const bold = (s: string) => useColor ? chalk.bold(s) : s
+  const dim = (s: string) => color('dim')(s)
+  const bold = (s: string) => color('bold')(s)
 
   const lines: string[] = []
   // 表头
@@ -188,7 +192,7 @@ export function createMarkdownStream(opts: {
       // 不够 2 行（表头+分隔）→ 当普通文本逐行渲染
       for (const l of tableBuf) emit(renderBlockLine(l))
     } else {
-      emit(renderTable(tableBuf, tableAligns, useColor))
+      emit(renderTable(tableBuf, tableAligns))
     }
     tableBuf = []
     tableAligns = []
