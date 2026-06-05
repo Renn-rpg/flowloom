@@ -1,12 +1,9 @@
 #!/usr/bin/env node
-import { config } from 'dotenv'
+// ⚠ 必须是第一个 import：先加载 .env，使 session-factory 等在 import 期求值的环境常量
+// （CONTEXT_TOKENS / MAX_TOKENS / REASONER_MODEL）能读到 .env 覆盖。详见 load-env.ts。
+import './load-env.js'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-
-// 加载 .env：全局 (~/.floom/.env) 优先，项目级 ($CWD/.env) 覆盖
-config({ path: join(homedir(), '.floom', '.env'), quiet: true })
-config({ quiet: true }) // $CWD/.env 覆盖全局
-
 import { Command } from 'commander'
 import { resolve, dirname, basename } from 'node:path'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
