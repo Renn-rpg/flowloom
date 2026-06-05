@@ -38,9 +38,10 @@ export interface TrimResult {
 // 导出供 compaction 复用——压缩与裁剪共用同一套「整轮」边界，保证不变量一致。
 export function splitRounds(messages: InternalMessage[]): InternalMessage[][] {
   if (messages.length > 0 && messages[0].role !== 'user') {
-    // 防御性检查：非正常消息流（如 corrupted session store），
-    // 插入虚拟 user 消息确保后续 API 请求不产生孤儿 tool_call_id。
-    return [[{ role: 'user', text: '[truncated]' }], ...messages.map(m => [m])]
+    // 防御性检查：非正常消息流（如 corrupted session store）。
+    // 将所有消息包裹为单轮——避免每条消息独立成轮破坏 assistant-tool 配对，
+    // 进而产生孤儿 tool_call_id 导致 API 400。
+    return [[{ role: 'user', text: '[truncated]' }, ...messages]]
   }
   const rounds: InternalMessage[][] = []
   for (const m of messages) {

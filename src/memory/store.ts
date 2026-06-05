@@ -75,6 +75,8 @@ export function formatMemory(entry: MemoryEntry): string {
 
 export class MemoryStore {
   private dirs: string[]
+  // 缓存完整 MemoryEntry parse 结果（name → entry）。list() 时填充，save/delete 时失效。
+  private cache: Map<string, MemoryEntry> | null = null
 
   constructor(projectDir?: string) {
     this.dirs = []
@@ -87,9 +89,11 @@ export class MemoryStore {
     }
   }
 
-  // 列出所有目录下的记忆条目（去重：同 name 的优先项目级）
+  // 列出所有目录下的记忆条目（去重：同 name 的优先项目级）。
+  // 同时缓存完整的 parse 结果，供 loadAll() 复用——避免每个文件被读两次。
   list(): MemoryMeta[] {
     const seen = new Map<string, MemoryMeta>()
+    this.cache = new Map()
     // 先读全局，再读项目（后者覆盖前者）
     for (const dir of this.dirs) {
       if (!existsSync(dir)) continue
@@ -105,6 +109,7 @@ export class MemoryStore {
           const entry = parseMemoryFile(raw)
           if (entry) {
             seen.set(entry.name, { name: f, description: entry.description, type: entry.type })
+            this.cache.set(entry.name, entry)
           }
         } catch {
           // 跳过损坏文件
@@ -135,6 +140,7 @@ export class MemoryStore {
     mkdirSync(dir, { recursive: true })
     const p = join(dir, `${name}.md`)
     writeFileSync(p, formatMemory(entry), 'utf8')
+    this.cache = null // 使缓存失效
   }
 
   // 删除
@@ -143,6 +149,7 @@ export class MemoryStore {
       const p = join(dir, `${name}.md`)
       try {
         unlinkSync(p)
+        this.cache = null // 使缓存失效
         return true
       } catch {
         continue
@@ -151,9 +158,12 @@ export class MemoryStore {
     return false
   }
 
-  // 列出所有记忆的完整内容（用于注入 system prompt）
+  // 列出所有记忆的完整内容（用于注入 system prompt）。
+  // 若 list() 已被调用过，直接复用缓存的 parse 结果——避免每个文件读两次。
   loadAll(): MemoryEntry[] {
-    const metas = this.list()
-    return metas.map(m => this.load(m.name.replace(/\.md$/, ''))).filter(Boolean) as MemoryEntry[]
+    if (this.cache) return [...this.cache.values()]
+    this.list() // 填充 cache
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    return [...this.cache!.values()]
   }
 }

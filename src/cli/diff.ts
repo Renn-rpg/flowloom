@@ -1,6 +1,6 @@
 import chalk from 'chalk'
 
-export type DiffTag = 'eq' | 'del' | 'add'
+type DiffTag = 'eq' | 'del' | 'add'
 export interface DiffOp {
   tag: DiffTag
   line: string

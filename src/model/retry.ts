@@ -6,6 +6,8 @@ export interface RetryOptions {
 }
 
 function defaultRetryable(err: any): boolean {
+  // 用户中断（AbortError）绝不重试——否则 ESC 打断后仍会白白重试 maxRetries 次
+  if (err?.name === 'AbortError') return false
   const status = err?.status ?? err?.response?.status
   if (status === 429) return true
   if (typeof status === 'number' && status >= 500) return true

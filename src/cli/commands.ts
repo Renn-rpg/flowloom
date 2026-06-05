@@ -23,6 +23,9 @@ export interface SlashContext {
   resetSettings(): string
   listCronJobs(): string
   toggleStatus?(): boolean
+  // 计划模式扩展
+  listPlans?(): string
+  revisePlan?(): void
 }
 
 export interface SlashResult {
@@ -63,6 +66,7 @@ export const SLASH_COMMANDS: Record<string, SlashSpec> = {
   cron: { usage: '/cron', desc: 'list scheduled cron jobs' },
   status: { usage: '/status', desc: 'toggle the status bar on/off' },
   workflows: { usage: '/workflows', desc: 'inspect the most recent parallel/workflow agent run' },
+  plans: { usage: '/plans', desc: 'list saved plans from plan mode' },
   retry: { usage: '/retry', desc: 'retry the last failed turn' },
   'deep-review': { usage: '/deep-review', desc: 'adversarial multi-agent code review (correctness + security)' },
   exit: { usage: '/exit', desc: 'quit floom' },
@@ -181,7 +185,8 @@ export function runSlash(line: string, ctx: SlashContext): SlashResult {
     case 'plan': {
       if (arg === 'revise') {
         if (!ctx.isPlanMode()) return { handled: true, output: 'Not in plan mode — nothing to revise.' }
-        return { handled: true, output: 'Plan mode still ON — revise your plan and call exit_plan_mode when ready.' }
+        ctx.revisePlan?.()
+        return { handled: true, output: 'Revision mode: refine your plan and call exit_plan_mode when ready.' }
       }
       const want = !ctx.isPlanMode()
       ctx.setPlanMode(want)
@@ -241,6 +246,8 @@ export function runSlash(line: string, ctx: SlashContext): SlashResult {
       return { handled: true, retry: true }
     case 'workflows':
       return { handled: true, openWorkflows: true }
+    case 'plans':
+      return { handled: true, output: ctx.listPlans?.() ?? 'No plan listing available.' }
     case 'code-review':
     case 'simplify':
     case 'architect':

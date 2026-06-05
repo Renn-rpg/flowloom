@@ -98,6 +98,17 @@ export class McpClient {
     }
   }
 
+  // 心跳探测：发送 ping notification，通过 request('ping') → 等待服务端返回 {}。
+  // 收到结果 = 存活；超时/异常 = 失联。
+  async ping(): Promise<boolean> {
+    try {
+      await this.request('ping', {})
+      return true
+    } catch {
+      return false
+    }
+  }
+
   async close(): Promise<void> {
     for (const [, p] of this.pending) {
       clearTimeout(p.timer)

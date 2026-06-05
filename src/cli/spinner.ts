@@ -79,8 +79,3 @@ export function stopActiveSpinner(): void {
   active?.stop()
   active = null
 }
-
-export function stopBlinking(): void {
-  active?.stop()
-  active = null
-}

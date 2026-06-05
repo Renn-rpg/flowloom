@@ -3,13 +3,7 @@ import type { ToolRegistry } from '../tools/registry.js'
 import type { InternalMessage } from '../protocol/types.js'
 import { trimMessages, estimateTokens } from './context.js'
 import { compactMessages } from './compaction.js'
-
-// 「已中断」错误（用户 ESC 打断本轮）。name=AbortError 便于上层识别。
-function makeAbortError(): Error {
-  const e = new Error('turn aborted by user')
-  e.name = 'AbortError'
-  return e
-}
+import { makeAbortError } from '../utils/abort-error.js'
 
 // 工具执行闸：返回是否放行 + 拒绝说明。模型/UI 无关——hooks 评估与"ask"交互都在 cli 里实现，
 // loop 只看一个布尔结果。缺省（undefined）= 一律放行。
@@ -100,11 +94,11 @@ export async function runTurn(
   s.messages.push({ role: 'user', text: userText })
   for (let iter = 0; iter < s.maxIters; iter++) {
     // 用户中断(如 ESC):在每轮迭代起点(工具执行后/下一次 generate 前)尽早退出。
-    if (opts?.signal?.aborted) throw makeAbortError()
+    if (opts?.signal?.aborted) throw makeAbortError('turn aborted by user')
     // UI 闸:钻入视图(alt-screen)打开期间挂起,等关闭后再 generate,防止流式文本写进 alt 缓冲被吞。
     if (callbacks.beforeGenerate) {
       await callbacks.beforeGenerate()
-      if (opts?.signal?.aborted) throw makeAbortError()
+      if (opts?.signal?.aborted) throw makeAbortError('turn aborted by user')
     }
     callbacks.onThinking?.()
 

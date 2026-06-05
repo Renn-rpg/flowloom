@@ -15,11 +15,14 @@ export function nextRunTime(expr: string, from: Date = new Date()): Date {
   // 简化：每分钟检查一次，找到匹配的时间
   for (let i = 0; i < 525600; i++) { // 最多往前找 1 年
     const d = new Date(from.getTime() + (i + 1) * 60_000)
+    const domMatch = matchField(dom, d.getDate(), 1, 31)
+    const dowMatch = matchField(dow, d.getDay(), 0, 6)
+    // 标准 cron：day-of-month 和 day-of-week 同时非 * 时用 OR 语义（任一匹配即触发）
+    const dayMatch = (dom !== '*' && dow !== '*') ? (domMatch || dowMatch) : (domMatch && dowMatch)
     if (matchField(min, d.getMinutes(), 0, 59) &&
         matchField(hour, d.getHours(), 0, 23) &&
-        matchField(dom, d.getDate(), 1, 31) &&
-        matchField(month, d.getMonth() + 1, 1, 12) &&
-        matchField(dow, d.getDay(), 0, 6)) {
+        dayMatch &&
+        matchField(month, d.getMonth() + 1, 1, 12)) {
       return d
     }
   }

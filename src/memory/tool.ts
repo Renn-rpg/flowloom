@@ -9,9 +9,8 @@ export function makeRememberTool(store: MemoryStore): Tool {
     spec: {
       name: 'remember',
       description:
-        'Write, update, or delete a persistent memory. Memories survive across sessions and are recalled automatically on startup. ' +
-        'Use this to remember user preferences, project conventions, known issues, and useful references. ' +
-        'Each memory must have a unique name (kebab-case slug).',
+        'Write/update/delete a persistent memory (survives across sessions, auto-recalled on startup). ' +
+        'Use for user preferences, project conventions, known issues, and references. Unique kebab-case name required.',
       inputSchema: {
         type: 'object',
         properties: {

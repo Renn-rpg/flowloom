@@ -1,5 +1,5 @@
 import { resolve, isAbsolute, relative, sep, dirname, basename } from 'node:path'
-import { realpathSync } from 'node:fs'
+import { realpathSync, appendFileSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 
 // ── 路径策略 ──────────────────────────────────────────────────────────────
 // 决定文件类工具（read/write/edit）能访问哪些路径。校验通过返回归一化后的
@@ -134,7 +134,6 @@ export const denyAllShell: ShellPolicy = {
 // 记录每次 deny/ask 决策到 .floom/permissions.log（JSONL 格式）。
 // 日志轮转：保留最近 1000 行。
 
-import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 // dirname/resolve 已在文件顶部从 'node:path' 导入
 
 const MAX_LOG_LINES = 1000

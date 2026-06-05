@@ -1,6 +1,7 @@
 import chalk from 'chalk'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { stripAnsi } from './format.js'
 
 function terminalWidth(): number {
   return Math.min(80, Math.max(40, process.stderr.columns ?? 80))
@@ -44,9 +45,8 @@ export function showWelcome(opts: {
   const W = terminalWidth()
   const bluePipe = blue('│')
   const blankLine = bluePipe + ' '.repeat(W - 2) + bluePipe
-  const STRIP_ANSI = /\x1B\[[0-9;]*m/g
   function border(text: string): string {
-    const visual = text.replace(STRIP_ANSI, '')
+    const visual = stripAnsi(text)
     const pad = W - 2 - visual.length
     return bluePipe + text + ' '.repeat(Math.max(0, pad)) + bluePipe
   }

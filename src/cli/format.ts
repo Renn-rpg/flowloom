@@ -40,6 +40,22 @@ export const fmt = {
 
   thinking: (ms: number) =>
     fmt.dim(`  Thinking... (${(ms / 1000).toFixed(1)}s)`),
+
+  // 用户已发送消息：灰底渲染，占满终端宽度
+  userMsg: (text: string, columns?: number) => {
+    const termW = Math.max(40, Math.min(120, columns ?? 80))
+    let line = text
+    if (visualWidth(text) > termW - 1) {
+      let w = 0
+      for (let i = 0; i < text.length; i++) {
+        const chW = visualWidth(text[i])
+        if (w + chW > termW - 2) { line = text.slice(0, i) + '…'; break }
+        w += chW
+      }
+    }
+    const pad = Math.max(0, termW - visualWidth(stripAnsi(line)))
+    return c(chalk.bgHex('#2d2d2d'))(line + ' '.repeat(pad))
+  },
 }
 
 // 去除 ANSI SGR 颜色序列（chalk 产生的 \x1b[..m）。计算视觉宽度/物理行数前先剥掉，

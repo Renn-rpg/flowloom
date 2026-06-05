@@ -33,14 +33,14 @@ import { compactMessages } from './agent/compaction.js'
 import { makeDispatchAgentTool } from './agent/subagent.js'
 import { makeDispatchAgentsTool } from './agent/dispatch-many.js'
 import { AgentTracker } from './cli/agent-tracker.js'
-import { makeExitPlanModeTool, planModeGate } from './agent/plan.js'
+import { makeExitPlanModeTool, planModeGate, listPlans } from './agent/plan.js'
 import type { Tool } from './tools/types.js'
 import { SessionStore } from './agent/session-store.js'
 import { executeWorkflow } from './workflow/workflow-runtime.js'
 import { makeWorkflowTool } from './workflow/workflow-tool.js'
 import type { WorkflowEvent } from './workflow/types.js'
 import { NodeVmRuntime, IsolatedVmRuntime } from './workflow/sandbox.js'
-import { createSpinner, stopActiveSpinner, stopBlinking } from './cli/spinner.js'
+import { createSpinner, stopActiveSpinner } from './cli/spinner.js'
 import { fmt, physicalRows } from './cli/format.js'
 import { showWelcome } from './cli/welcome.js'
 import { renderDiff } from './cli/diff.js'
@@ -158,8 +158,12 @@ async function runTurnWithUI(
   let disarmInterrupt: (() => void) | null = null
   if (armInterrupt) {
     disarmInterrupt = armInterrupt((kind) => {
-      if (kind === 'esc') { interrupted = true; turnAbort.abort() }
-      else {
+      if (kind === 'esc') {
+        interrupted = true
+        // 先恢复 stdin 再中断请求——即便流没立即抛错，终端也立即可用
+        if (disarmInterrupt) { disarmInterrupt(); disarmInterrupt = null }
+        turnAbort.abort()
+      } else {
         // Ctrl-C:raw 模式下不会自动触发 SIGINT。先 disarm 恢复 stdin(raw/echo),避免 process.exit
         // 后终端残留 raw 模式;再转交既有退出处理器(cleanup + exit)。
         if (disarmInterrupt) disarmInterrupt()
@@ -360,7 +364,7 @@ async function runTurnWithUI(
   } finally {
     flushMd() // 任何退出路径(含异常中断)都 flush 已缓冲的 Markdown 行,避免丢字
     stopThinking()
-    stopBlinking()
+    stopActiveSpinner()
     ui.lastReasoning = reasoningBuf
     if (ui.hasRepl) setTerminalTitle(idleTitle()) // turn 结束:标题复位
     if (disarmInterrupt) disarmInterrupt() // 恢复 stdin 原状态(raw/listeners/paused)
@@ -476,7 +480,7 @@ program
       const canApprove = Boolean(process.stdin.isTTY)
       // 计划模式：只读调研→出计划→批准后再执行。需可弹批准菜单（TTY），否则会卡死无法退出，
       // 故 --plan 仅在 interactive + canApprove 时生效；请求了但无 TTY 则告警忽略。
-      const planState = { active: interactive && canApprove && Boolean(opts.plan) }
+      const planState = { active: interactive && canApprove && Boolean(opts.plan), revision: false }
       if (opts.plan && interactive && !canApprove) {
         process.stderr.write(fmt.yellow('⚠ plan mode needs an interactive terminal; ignoring --plan\n'))
       }
@@ -843,7 +847,7 @@ program
             for (const t of mcpTools) reg.register(t)
             return reg // 不注册 dispatch_agent → 子 agent 无法再派发
           },
-          system: makeSubAgentSystem(effectiveModel),
+          system: makeSubAgentSystem(effectiveModel, planState.active),
           model: effectiveModel,
           maxTokens: MAX_TOKENS,
           contextTokens: CONTEXT_TOKENS,
@@ -906,7 +910,7 @@ program
             for (const t of mcpTools) reg.register(t)
             return reg // 不注册 dispatch_agent/dispatch_agents → 子 agent 无法再派发
           },
-          system: makeSubAgentSystem(effectiveModel),
+          system: makeSubAgentSystem(effectiveModel, planState.active),
           model: effectiveModel,
           maxTokens: MAX_TOKENS,
           contextTokens: CONTEXT_TOKENS,
@@ -980,7 +984,7 @@ program
             client: session.client,
             registry: wfRegistry,
             model: effectiveModel,
-            system: makeSubAgentSystem(effectiveModel),
+            system: makeSubAgentSystem(effectiveModel, planState.active),
             maxTokens: MAX_TOKENS,
             onEvent: onWfEvent,
             getSignal: () => wfAbort?.signal,
@@ -1056,6 +1060,10 @@ program
         footer?.remove() // 复位滚动区 + 清页脚（所有退出路径都经此，含 SIGINT/SIGTERM）
         shells.killAll()
         void mcpClose()
+        // 确保退出时恢复终端正常模式，避免残留 raw mode 导致用户无法输入
+        if (process.stdin.isTTY) {
+          try { process.stdin.setRawMode(false) } catch { /* best-effort */ }
+        }
       }
       const onSignal = (sig: NodeJS.Signals, exitCode: number) => {
         cleanup()
@@ -1139,7 +1147,6 @@ program
         process.stderr.write(fmt.dim('  Paste your key below (input hidden):\n  > '))
         // 简易隐藏输入：切换 raw mode 逐字符读取
         try {
-          const { ReplReader } = await import('./cli/repl-input.js')
           const r = new ReplReader({ out: process.stderr, promptText: '' })
           const input = await r.question()
           r.close()
@@ -1222,7 +1229,21 @@ program
         listSessions: () => sessionsText(store),
         showSessionMenu: async () => {
           const { showSessionMenu } = await import('./cli/session-factory.js')
-          return showSessionMenu(store, {})
+          return showSessionMenu(store, {
+            onResume: (id) => {
+              const saved = store.load(id)
+              if (saved) {
+                session.messages = saved.messages
+                session.usage = saved.usage
+                session.model = saved.model
+                sessionId = saved.id
+                createdAt = saved.createdAt
+                title = saved.title
+                refreshSystem()
+              }
+            },
+            onDelete: (id) => store.delete(id),
+          })
         },
         getSettings: () => describeSettings(settings),
         saveSetting: (key, value) => saveSetting(process.cwd(), key, value),
@@ -1239,6 +1260,16 @@ program
           return jobs.map(j =>
             `  ${j.id}  ${j.expr}  →  "${j.prompt.slice(0, 60)}"  next: ${j.nextRun.slice(0, 19)}`
           ).join('\n')
+        },
+        listPlans: () => {
+          const plans = listPlans(process.cwd())
+          if (plans.length === 0) return fmt.dim('No saved plans in .floom/')
+          return fmt.bold(`Saved plans (${plans.length}):`) + '\n' +
+            plans.map(p => `  ${fmt.cyan(p.file)}  ${fmt.dim(p.date)}  ${p.title}`).join('\n')
+        },
+        revisePlan: () => {
+          planState.revision = true
+          refreshSystem()
         },
         toggleStatus: () => {
           // 底部面板（输入态内联面板 + 输出态滚动区页脚）统一由 panelEnabled 控制；
@@ -1402,7 +1433,13 @@ program
                 })
                 if (c === null) {
                   process.stderr.write(fmt.dim('  🗜 retrying after network error…\n'))
-                  c = await doCompact()
+                  try {
+                    c = await doCompact()
+                  } catch (e2) {
+                    // 重试也失败：给出明确提示而非崩溃
+                    process.stderr.write(fmt.red(`  ✗ compact retry failed: ${formatApiError(e2)}\n`))
+                    continue
+                  }
                 }
                 if (c) {
                   session.system = c.system

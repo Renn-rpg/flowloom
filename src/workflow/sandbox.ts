@@ -50,6 +50,9 @@ const sandboxBase = Object.freeze({
   // 对完全隔离需求应使用 isolated-vm。
   Function: undefined,
   eval: undefined,
+  // 阻断 Proxy/Reflect 原型链攻击路径（如通过 Reflect.getPrototypeOf 拿到宿主 Function）
+  Proxy: undefined,
+  Reflect: undefined,
 })
 
 // 封装宿主函数引用：阻止沙箱代码通过 fn.constructor 拿到宿主 Function 构造器。
@@ -58,27 +61,51 @@ const sandboxBase = Object.freeze({
 function sealHostFn(fn: (...args: any[]) => any): (...args: any[]) => any {
   const proxy = new Proxy(fn, {
     get(target, prop) {
-      if (prop === 'constructor') {
-        throw new Error('Function constructor is not available in the sandbox')
+      // 阻断 constructor / __proto__ / prototype 等原型链逃逸路径
+      if (prop === 'constructor' || prop === '__proto__' || prop === 'prototype') {
+        throw new Error(`Function ${String(prop)} is not available in the sandbox`)
       }
       // 放行 Function.prototype 的必要方法（.apply/.call/.bind 等），否则沙箱无法调用该函数。
-      // 只阻断 constructor，其余属性通过 Reflect.get 正常返回。
       const val = Reflect.get(target, prop)
-      if (typeof val === 'function') return val.bind(target)
+      if (typeof val === 'function') {
+        const bound = val.bind(target)
+        // 对 .bind/.call/.apply 返回的函数也做封装，阻断 `fn.bind(null).constructor` 逃逸路径
+        if (prop === 'bind' || prop === 'call' || prop === 'apply') {
+          return sealHostFn(bound as (...args: any[]) => any)
+        }
+        return bound
+      }
       return val
     },
   }) as (...args: any[]) => any
   return proxy
 }
 
-// 递归封装对象中所有函数值，阻断宿主函数引用进入沙箱。
-function sealApi(api: Record<string, unknown>): Record<string, unknown> {
+// 深度封装对象中所有函数值，阻断宿主函数引用进入沙箱。
+// 覆盖：string keys + Symbol keys + 非枚举属性 + getter/setter。
+function sealApi(api: Record<string, unknown>, depth = 0, maxDepth = 10): Record<string, unknown> {
+  if (depth >= maxDepth) return api
   const sealed: Record<string, unknown> = {}
-  for (const key of Object.keys(api)) {
-    const val = api[key]
-    sealed[key] = typeof val === 'function' ? sealHostFn(val as (...args: any[]) => any) : val
+  // 遍历所有自有属性（含 Symbol、非枚举）
+  const descs = Object.getOwnPropertyDescriptors(api)
+  for (const key of [...Object.getOwnPropertyNames(api), ...Object.getOwnPropertySymbols(api)]) {
+    const desc = descs[key as string] ?? descs[key as any]
+    const sk = typeof key === 'symbol' ? key.toString() : key
+    if (desc.get) {
+      // getter 返回的函数也需要密封
+      sealed[sk] = typeof desc.get === 'function' ? sealHostFn(desc.get as (...args: any[]) => any) : undefined
+    } else {
+      const val = (api as any)[key]
+      if (typeof val === 'function') {
+        sealed[sk] = sealHostFn(val as (...args: any[]) => any)
+      } else if (val && typeof val === 'object' && !Array.isArray(val)) {
+        sealed[sk] = sealApi(val as Record<string, unknown>, depth + 1, maxDepth)
+      } else {
+        sealed[sk] = val
+      }
+    }
   }
-  return sealed
+  return Object.seal(sealed)
 }
 
 export class NodeVmRuntime implements Runtime {
@@ -239,6 +266,6 @@ export class IsolatedVmRuntime implements Runtime {
         if (!disposed) { disposed = true; try { isolate.dispose() } catch {} }
       },
     }
-    } catch { try { isolate.dispose() } catch {}; throw new Error('Failed to create isolated-vm context') }
+    } catch (e) { try { isolate.dispose() } catch {}; throw new Error(`Failed to create isolated-vm context: ${(e as Error).message}`) }
   }
 }

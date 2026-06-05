@@ -6,7 +6,6 @@ import { SqliteJournal } from './journal.js'
 import { hashCanonical } from './hash.js'
 import { Semaphore } from './concurrency.js'
 import { BudgetTracker } from './budget.js'
-import { NodeVmRuntime } from './sandbox.js'
 import { Workspace } from './workspace.js'
 
 const MAX_AGENTS = 1000

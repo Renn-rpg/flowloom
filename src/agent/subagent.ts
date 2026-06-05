@@ -43,12 +43,9 @@ export function makeDispatchAgentTool(deps: DispatchAgentDeps): Tool {
     spec: {
       name: 'dispatch_agent',
       description:
-        'Launch a sub-agent to autonomously handle a focused, self-contained sub-task. ' +
-        'The sub-agent has its own fresh context and the same file/search/shell tools, but CANNOT dispatch further sub-agents. ' +
-        'It does NOT see this conversation, so pass a COMPLETE, standalone task description. ' +
-        'The sub-agent runs its own multi-step tool loop and returns only its final report as text. ' +
-        'Use it to keep large exploration/research out of the main context, or to delegate a well-scoped subtask. ' +
-        'Prefer one dispatch per independent subtask.',
+        'Launch ONE sub-agent for a focused, self-contained subtask. ' +
+        'Has its own context + tools (cannot dispatch further). Sees no conversation history — pass a complete standalone task. ' +
+        'Returns only its final summary. Keeps large work out of the main context.',
       inputSchema: {
         type: 'object',
         properties: {

@@ -1,6 +1,6 @@
 {
   "name": "flowloom",
-  "version": "0.14.1",
+  "version": "0.14.2",
   "description": "DeepSeek FlowLoom — an open-source, DeepSeek-native agentic coding CLI rivaling Claude Code.",
   "type": "module",
   "bin": {
@@ -58,5 +58,8 @@
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
+  },
+  "optionalDependencies": {
+    "isolated-vm": "^5.0.0"
   }
 }

@@ -5,6 +5,8 @@
 // 模型无关：本模块只依赖 Tool 类型；闸的拦截决策是纯函数；批准的 UI 交互由 cli 注入。
 
 import type { Tool } from '../tools/types.js'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, basename } from 'node:path'
 
 // 计划模式下允许的只读工具（其余一律拦截——无副作用才符合"先规划后执行"）。
 // exit_plan_mode 自身必须放行（它是退出计划模式的唯一途径）。
@@ -46,10 +48,8 @@ export function makeExitPlanModeTool(deps: ExitPlanModeDeps): Tool {
     spec: {
       name: 'exit_plan_mode',
       description:
-        'Call this ONLY when plan mode is active and you have finished researching and have a concrete, complete plan ready. ' +
-        'Pass the full plan text; the user is shown the plan and approves or rejects it. ' +
-        'On approval, plan mode turns off and you may implement the plan with the full set of tools. ' +
-        'Do NOT call this before you have a complete plan, and do not use it to make changes yourself.',
+        'Submit your completed plan for approval. Only call when plan mode is active and you have a complete plan. ' +
+        'Pass the full plan text — the user approves or rejects it. On approval, plan mode turns OFF and full tools unlock.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -77,3 +77,30 @@ export function makeExitPlanModeTool(deps: ExitPlanModeDeps): Tool {
     },
   }
 }
+
+// ── 计划列表 ─────────────────────────────────────────────────────────────
+
+export interface PlanMeta {
+  file: string
+  title: string
+  date: string
+}
+
+// 列出 .floom/ 下所有 plan-*.md 文件
+export function listPlans(cwd: string): PlanMeta[] {
+  const dir = join(cwd, '.floom')
+  let files: string[]
+  try { files = readdirSync(dir).filter(f => f.startsWith('plan-') && f.endsWith('.md')) }
+  catch { return [] }
+  return files.map(f => {
+    let title = '(untitled)'
+    try {
+      const raw = readFileSync(join(dir, f), 'utf8')
+      const m = raw.match(/^#\s*Plan:\s*(.+)$/m)
+      if (m) title = m[1].trim()
+      else { const first = raw.split('\n').find(l => l.trim()); if (first) title = first.replace(/^#\s*/, '').trim().slice(0, 60) }
+    } catch { /* skip */ }
+    return { file: f, title, date: f.replace(/^plan-/, '').replace(/\.md$/, '') }
+  })
+}
+

@@ -105,11 +105,9 @@ export function flattenRoundsToText(rounds: InternalMessage[][]): string {
 }
 
 const SUMMARY_INSTRUCTION =
-  'You are compacting an agentic coding session to save context window. ' +
-  'Summarize the transcript below into a concise but information-dense synopsis so the assistant can continue seamlessly. ' +
-  'Preserve: the user\'s goals and explicit instructions, decisions made, files/functions created or modified, ' +
-  'key facts discovered, commands run and their outcomes, and any unfinished tasks or next steps. ' +
-  'Omit small talk. Use compact bullet points. Do NOT invent anything not present in the transcript.'
+  'Compact this coding session into a concise bullet-point synopsis. ' +
+  'Preserve: user goals, decisions, files changed, commands run, key facts, and unfinished tasks. ' +
+  'Omit small talk. Use compact bullet points. Do NOT invent anything.'
 
 // 构造摘要请求：单条 user 消息装扁平化文本 + （如有）更早的摘要，tools 置空（摘要不应发起工具调用）。
 export function buildSummaryRequest(

@@ -68,20 +68,20 @@ export class ModelRouter implements ModelClient {
           errors.push(`${name}: circuit breaker open`)
           continue
         }
-        // 半开状态：发送轻量探测请求，成功才放行业务请求
+        // 半开状态：发送轻量探测请求，成功才放行业务请求。
+        // 若模型不支持 countTokens，直接以真实请求作为探针（fall through 到下面的 generate）。
         if (this.breaker.currentState === 'half-open') {
-          if (!client.countTokens) {
-            errors.push(`${name}: circuit breaker half-open (no probe available)`)
-            continue
+          if (client.countTokens) {
+            try {
+              await client.countTokens('ping')
+              this.breaker.recordSuccess()
+            } catch {
+              this.breaker.recordFailure()
+              errors.push(`${name}: circuit breaker probe failed`)
+              continue
+            }
           }
-          try {
-            await client.countTokens('ping')
-            this.breaker.recordSuccess()
-          } catch {
-            this.breaker.recordFailure()
-            errors.push(`${name}: circuit breaker probe failed`)
-            continue
-          }
+          // 无 countTokens → 以真实 generate 请求作为探针，不做提前跳过
         }
       }
 

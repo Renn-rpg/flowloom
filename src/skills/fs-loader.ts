@@ -64,49 +64,6 @@ export function loadSkillsFromDir(dir: string): Skill[] {
   return skills
 }
 
-// mtime 缓存：记录每个 .md 文件的修改时间，用于检测变更后的自动重载
-const _mtimeCache = new Map<string, number>()
-
-/** 检测目录中技能文件是否有变更（新增/删除/修改），有变更返回 true */
-export function hasSkillChanges(dir: string): boolean {
-  try {
-    if (!existsSync(dir)) {
-      // 目录被删除 → 始终视为变更，清理缓存
-      let had = false
-      for (const key of _mtimeCache.keys()) {
-        if (key.startsWith(dir)) { _mtimeCache.delete(key); had = true }
-      }
-      return had || _mtimeCache.has(dir)
-    }
-    const entries = readdirSync(dir).filter(e => extname(e) === '.md')
-    const currentFiles = new Set<string>()
-
-    for (const entry of entries) {
-      const filePath = join(dir, entry)
-      currentFiles.add(filePath)
-      try {
-        const mtime = statSync(filePath).mtimeMs
-        if (_mtimeCache.get(filePath) !== mtime) {
-          _mtimeCache.set(filePath, mtime)
-          return true
-        }
-      } catch {
-        return true
-      }
-    }
-
-    for (const cached of _mtimeCache.keys()) {
-      if (cached.startsWith(dir) && !currentFiles.has(cached)) {
-        _mtimeCache.delete(cached)
-        return true
-      }
-    }
-
-    return false
-  } catch {
-    return true // 目录不可读 → 视为变更
-  }
-}
 
 // 加载全部技能：全局 + 项目级，项目级覆盖全局级同名技能。
 export function loadAllSkills(cwd: string, home?: string): Skill[] {

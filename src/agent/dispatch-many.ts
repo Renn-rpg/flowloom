@@ -74,11 +74,9 @@ export function makeDispatchAgentsTool(deps: DispatchManyDeps): Tool {
     spec: {
       name: 'dispatch_agents',
       description:
-        'Launch MULTIPLE sub-agents that run CONCURRENTLY, each on its own focused, self-contained sub-task. ' +
-        'Use this whenever you have several INDEPENDENT subtasks that can proceed in parallel (e.g. explore N modules at once, audit N files, research N topics). ' +
-        'Each sub-agent has its own fresh context and the same file/search/shell tools, but CANNOT dispatch further sub-agents, and does NOT see this conversation — pass each a COMPLETE, standalone task description. ' +
-        'They execute in parallel (capped by a concurrency limit) and each returns only its final report. ' +
-        'STRONGLY prefer this over calling dispatch_agent many times in sequence — it is dramatically faster for independent work.',
+        'Launch MULTIPLE sub-agents CONCURRENTLY for independent subtasks. ' +
+        'Each has its own context + tools (cannot dispatch further) and sees no conversation history — pass complete standalone tasks. ' +
+        'Much faster than sequential dispatch_agent calls — use when subtasks are independent.',
       inputSchema: {
         type: 'object',
         properties: {

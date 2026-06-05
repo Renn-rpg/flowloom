@@ -69,6 +69,9 @@ export function decodeKey(s: string): Key {
       return { t: 'ctrl-r' }
     case '\x0f':
       return { t: 'ctrl-o' }
+    case '\x1b[13;2u': // Shift+Enter (kitty protocol)
+    case '\x1b[13u':   // Shift+Enter (bare CSI u)
+      return { t: 'newline' }
     case '\x1b\r': // Alt+Enter → 插入换行 (\r === \x0d)
       return { t: 'newline' }
     case '\x01': // Ctrl-A → 行首
@@ -402,9 +405,10 @@ export class ReplReader {
       }
       // Ctrl-C(0x03):raw 模式下不会自动产生 SIGINT,这里手动转交退出逻辑
       if (chunk.includes(0x03)) { handlers.onCtrlC(); return }
-      // 单字节 ESC：可能是独立 ESC(打断),也可能是被拆分的转义序列首字节。缓冲 12ms 等续着。
+      // 单字节 ESC：可能是独立 ESC(打断),也可能是被拆分的转义序列首字节。
+      // 缓冲 30ms——Windows ConPTY/pwsh 下序列字节间延迟可能 >12ms，导致误触。
       if (chunk.length === 1 && chunk[0] === 0x1b) {
-        escTimer = setTimeout(() => { escTimer = null; handlers.onEsc() }, 12)
+        escTimer = setTimeout(() => { escTimer = null; handlers.onEsc() }, 30)
         return
       }
       dispatchSeq(chunk.toString('latin1'))
@@ -423,11 +427,12 @@ export class ReplReader {
     }
   }
 
-  // 从文件加载历史（JSONL 格式，每行一条命令）
+  // 从文件加载历史（JSONL 格式，每行一条命令），上限 600 与 in-memory 限制对齐
   loadHistory(path: string): void {
     try {
       const raw = readFileSync(path, 'utf8')
-      this.history = raw.split('\n').map(s => s.trim()).filter(Boolean)
+      const lines = raw.split('\n').map(s => s.trim()).filter(Boolean)
+      this.history = lines.length > 600 ? lines.slice(-600) : lines
     } catch { /* 无文件/不可读 → 空历史 */ }
   }
 
@@ -569,8 +574,8 @@ export class ReplReader {
         // 光标在输入区，上移回到顶部边框行，清除整个边框区域
         if (prevRenderHeight > 0) out.write(`\x1b[${prevRenderHeight}A`)
         out.write('\r\x1b[J')
-        // 输出不带边框的最终输入行到 scrollback
-        out.write(`${colored}${st.buffer}\n`)
+        // 输出灰底渲染的最终输入行到 scrollback（所有路径统一回显）
+        out.write(fmt.userMsg(`${colored}${st.buffer}`, out.columns ?? 80) + '\n')
       }
 
       const apply = (key: Key): boolean => {
@@ -588,6 +593,8 @@ export class ReplReader {
             const trimmed = st.buffer.trim()
             if (trimmed && this.history[this.history.length - 1] !== trimmed) {
               this.history.push(trimmed)
+              // 防止 in-memory 历史无限增长：保留最近 600 条（写盘时只取 500）
+              if (this.history.length > 600) this.history = this.history.slice(-600)
             }
             resolve(st.buffer)
             return true
@@ -660,8 +667,9 @@ export class ReplReader {
           apply(decodeKey(s))
           return
         }
-        // 多字符粘贴：换行保留为多行输入，其他控制字符替换为空格
-        const cleaned = s.replace(/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]/g, ' ').replace(/\s{2,}/g, ' ').trim()
+        // 多字符粘贴：所有控制字符（含 \n \r）替换为空格，合并空白，避免换行符导致
+        // decodeKey 可见字符检查失败（\n < ' '）而整个粘贴被当成 unknown 丢弃。
+        const cleaned = s.replace(/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f\x0a\x0d]/g, ' ').replace(/\s{2,}/g, ' ').trim()
         if (cleaned.length > 0) apply(decodeKey(cleaned))
       }
 

@@ -45,6 +45,7 @@ export class StdioTransport implements Transport {
   private handler: (msg: any) => void = () => {}
   private _closing: Promise<void> | null = null
   private _exited = false
+  private _restarting = false
   constructor(private cfg: StdioTransportConfig) {}
 
   get isConnected(): boolean { return !!this.child && !this._exited }
@@ -54,14 +55,27 @@ export class StdioTransport implements Transport {
   async start(): Promise<void> { await this._spawn() }
 
   async restart(): Promise<void> {
-    if (this._closing) return
-    this._exited = false; this._closing = null
-    for (let i = 0; i < 3; i++) {
-      try { await this._spawn(); return } catch {
-        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)))
+    // 防止并发 restart（如 onDisconnect 多次触发）
+    if (this._restarting) return
+    this._restarting = true
+    try {
+      // 等正在进行的 close 完成后再重启，避免 spawn 与 kill 竞态
+      if (this._closing) await this._closing
+      // 杀掉旧子进程，防止新旧 stdout 数据混入同一个消息处理器导致协议损坏
+      if (this.child) {
+        try { this.child.kill('SIGTERM') } catch { /* best-effort */ }
+        this.child = undefined
       }
+      this._exited = false; this._closing = null
+      for (let i = 0; i < 3; i++) {
+        try { await this._spawn(); return } catch {
+          await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)))
+        }
+      }
+      throw new Error(`MCP restart failed after 3 attempts: ${this.cfg.command}`)
+    } finally {
+      this._restarting = false
     }
-    throw new Error(`MCP restart failed after 3 attempts: ${this.cfg.command}`)
   }
 
   private async _spawn(): Promise<void> {

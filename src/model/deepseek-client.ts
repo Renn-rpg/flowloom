@@ -4,13 +4,7 @@ import type { GenerateRequest, GenerateResult, GenerateOptions } from '../protoc
 import { toOpenAIRequest } from '../protocol/to-openai.js'
 import { fromOpenAIResponse, StreamAccumulator } from '../protocol/from-openai.js'
 import { withRetry } from './retry.js'
-
-// 统一的「已中断」错误（name=AbortError,便于上层识别;但 cli 主要靠自己的 AbortController.signal.aborted 判定）。
-function makeAbortError(): Error {
-  const e = new Error('request aborted')
-  e.name = 'AbortError'
-  return e
-}
+import { makeAbortError } from '../utils/abort-error.js'
 
 export interface DeepSeekClientOptions {
   model: string
@@ -31,8 +25,9 @@ export class DeepSeekClient implements ModelClient {
     this.maxRetries = opts.maxRetries ?? 3
     this.timeoutMs = opts.timeoutMs ?? 60_000
     const rawKey = opts.apiKey ?? process.env.DEEPSEEK_API_KEY
-    // 清洗：去掉首尾空白和引号（.env 中可能写了 DEEPSEEK_API_KEY="sk-xxx"）
-    const apiKey = rawKey?.trim().replace(/^["']|["']$/g, '').replace(/^["']|["']$/g, '') ?? ''
+    // 清洗：去掉首尾空白和引号。
+    // 防御 dotenv 未正确剥离引号的环境（如 shell 中 export DEEPSEEK_API_KEY="sk-xxx"）。
+    const apiKey = rawKey?.trim().replace(/^["']|["']$/g, '') ?? ''
     if (!apiKey && !opts.openai) {
       throw new Error(
         'No API key configured. Set DEEPSEEK_API_KEY in .env or pass apiKey option.\n' +
@@ -49,7 +44,7 @@ export class DeepSeekClient implements ModelClient {
   }
   async generate(req: GenerateRequest, opts?: GenerateOptions): Promise<GenerateResult> {
     // 外部中断:进入即检查,已 aborted 直接抛(如 ESC 在工具执行期触发,下一轮 generate 立即退出)。
-    if (opts?.signal?.aborted) throw makeAbortError()
+    if (opts?.signal?.aborted) throw makeAbortError('request aborted')
     const body = toOpenAIRequest({ ...req, model: this.model })
     const create = (extra: Record<string, unknown>) =>
       this.openai.chat.completions.create({ ...(body as any), ...extra }, { timeout: this.timeoutMs })

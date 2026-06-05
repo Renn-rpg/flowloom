@@ -46,7 +46,7 @@ export function makeGitDiffTool(): Tool {
   return {
     spec: {
       name: 'git_diff',
-      description: 'Show git diff: unstaged changes (default), staged (--staged), or between commits. Wraps "git diff".',
+      description: 'Show git diff: unstaged changes (default), staged (--staged), or between commits.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -73,7 +73,7 @@ export function makeGitLogTool(): Tool {
   return {
     spec: {
       name: 'git_log',
-      description: 'Show git commit history. Wraps "git log --oneline".',
+      description: 'Show git commit history.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -99,7 +99,7 @@ export function makeGitBranchTool(): Tool {
   return {
     spec: {
       name: 'git_branch',
-      description: 'List or create git branches. Wraps "git branch".',
+      description: 'List or create git branches.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -167,7 +167,7 @@ export function makeGitStatusTool(): Tool {
   return {
     spec: {
       name: 'git_status',
-      description: 'Show the working tree status. Wraps "git status --short".',
+      description: 'Show the working tree status.',
       inputSchema: { type: 'object', properties: {} },
     },
     handler: async () => {
@@ -185,7 +185,7 @@ export function makeGitStashTool(): Tool {
   return {
     spec: {
       name: 'git_stash',
-      description: 'Stash changes (push), list stashes, or pop the latest stash. Wraps "git stash".',
+      description: 'Stash changes (push), list stashes, or pop the latest stash.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -222,7 +222,7 @@ export function makeGitWorktreeTool(): Tool {
   return {
     spec: {
       name: 'git_worktree',
-      description: 'List, add, or remove git worktrees. Wraps "git worktree".',
+      description: 'List, add, or remove git worktrees.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -261,7 +261,7 @@ export function makeGitFetchTool(): Tool {
   return {
     spec: {
       name: 'git_fetch',
-      description: 'Fetch from a remote repository. Wraps "git fetch".',
+      description: 'Fetch from a remote repository.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -288,7 +288,7 @@ export function makeGitPushTool(shell: ShellPolicy): Tool {
   return {
     spec: {
       name: 'git_push',
-      description: 'Push commits to a remote. Requires confirmation. Wraps "git push".',
+      description: 'Push commits to a remote. Requires confirmation.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -322,7 +322,7 @@ export function makeGitPullTool(shell: ShellPolicy): Tool {
   return {
     spec: {
       name: 'git_pull',
-      description: 'Pull from a remote. Requires confirmation. Wraps "git pull".',
+      description: 'Pull from a remote. Requires confirmation.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -354,7 +354,7 @@ export function makeGitMergeTool(): Tool {
   return {
     spec: {
       name: 'git_merge',
-      description: 'Merge a branch into the current branch. Wraps "git merge".',
+      description: 'Merge a branch into the current branch.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -379,7 +379,7 @@ export function makeGitRebaseTool(shell: ShellPolicy): Tool {
   return {
     spec: {
       name: 'git_rebase',
-      description: 'Rebase current branch onto another. Requires confirmation. Wraps "git rebase".',
+      description: 'Rebase current branch onto another. Requires confirmation.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -409,7 +409,7 @@ export function makeGitResetTool(shell: ShellPolicy): Tool {
   return {
     spec: {
       name: 'git_reset',
-      description: 'Reset HEAD to a specified state. Wraps "git reset". Hard reset requires extra confirmation.',
+      description: 'Reset HEAD to a specified state. Hard reset requires extra confirmation.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -444,7 +444,7 @@ export function makeGitRevertTool(): Tool {
   return {
     spec: {
       name: 'git_revert',
-      description: 'Revert a commit by creating a new inverse commit. Wraps "git revert".',
+      description: 'Revert a commit by creating a new inverse commit.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -471,7 +471,7 @@ export function makeGitBlameTool(): Tool {
   return {
     spec: {
       name: 'git_blame',
-      description: 'Show line-by-line authorship for a file. Wraps "git blame".',
+      description: 'Show line-by-line authorship for a file.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -500,7 +500,7 @@ export function makeGitTagTool(): Tool {
   return {
     spec: {
       name: 'git_tag',
-      description: 'List or create git tags. Wraps "git tag".',
+      description: 'List or create git tags.',
       inputSchema: {
         type: 'object',
         properties: {

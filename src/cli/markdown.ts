@@ -8,6 +8,7 @@
 // 代码块样式集中在 `codeBlock`，P0-2 语法高亮可直接替换它，无需改其它逻辑。
 import chalk from 'chalk'
 import { highlightLine, makeHlState, type HlState } from './highlight.js'
+import { visualWidth, stripAnsi } from './format.js'
 
 const useColor = !process.env.NO_COLOR && process.env.TERM !== 'dumb' && !!process.stderr.isTTY
 const paint = (fn: (s: string) => string) => (s: string) => (useColor ? fn(s) : s)
@@ -70,6 +71,13 @@ function renderBlockLine(line: string): string {
   // 水平分隔线：整行由同一个 - * _ 重复 3+ 次构成
   if (/^\s*([-*_])\1{2,}\s*$/.test(line)) return C.dim('─'.repeat(hrWidth()))
 
+  // 任务列表：- [x] / - [ ]
+  const task = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line)
+  if (task) {
+    const check = task[2].toLowerCase() === 'x' ? C.bullet('☑') : C.dim('☐')
+    return task[1] + check + ' ' + renderInline(task[3])
+  }
+
   const ul = /^(\s*)[-*+]\s+(.*)$/.exec(line)
   if (ul) return ul[1] + C.bullet('•') + ' ' + renderInline(ul[2])
 
@@ -84,42 +92,148 @@ export interface MarkdownStream {
   end(): void
 }
 
+// ── 表格辅助 ────────────────────────────────────────────────────────────────
+
+type TableAlign = 'left' | 'center' | 'right'
+
+function isTableRow(line: string): boolean {
+  return /^\s*\|.+\|\s*$/.test(line) && !/^\s*\|[\s|:-]+\|\s*$/.test(line)
+}
+
+function isTableSep(line: string): boolean {
+  return /^\s*\|[\s|:-]+\|\s*$/.test(line)
+}
+
+// 从分隔行解析对齐方向：|---|:---:|---:| → left, center, right
+function parseAligns(sep: string): TableAlign[] {
+  return sep.replace(/^\s*\||\|\s*$/g, '').split('|').map(c => {
+    const s = c.trim()
+    if (s.startsWith(':') && s.endsWith(':')) return 'center'
+    if (s.endsWith(':')) return 'right'
+    return 'left'
+  })
+}
+
+// 渲染缓存好的表
+function renderTable(rows: string[], aligns: TableAlign[], useColor: boolean): string {
+  // 第一行是表头
+  const headerCells = rows[0].replace(/^\s*\||\|\s*$/g, '').split('|').map(c => renderInline(c.trim()))
+  const bodyRows = rows.slice(1).map(r =>
+    r.replace(/^\s*\||\|\s*$/g, '').split('|').map(c => renderInline(c.trim()))
+  )
+  const allRows = [headerCells, ...bodyRows]
+  const nCols = headerCells.length
+
+  // 计算列宽：扫所有行，每列取 visualWidth 最大值（最小 3）
+  const widths: number[] = Array(nCols).fill(3)
+  for (const row of allRows) {
+    for (let i = 0; i < nCols && i < row.length; i++) {
+      widths[i] = Math.max(widths[i], visualWidth(stripAnsi(row[i])))
+    }
+  }
+
+  const pad = (cell: string, w: number, a: TableAlign): string => {
+    const vw = visualWidth(stripAnsi(cell))
+    const d = w - vw
+    if (a === 'right') return ' '.repeat(d) + cell
+    if (a === 'center') {
+      const l = Math.floor(d / 2)
+      return ' '.repeat(l) + cell + ' '.repeat(d - l)
+    }
+    return cell + ' '.repeat(d) // left
+  }
+
+  const dim = (s: string) => useColor ? chalk.dim(s) : s
+  const bold = (s: string) => useColor ? chalk.bold(s) : s
+
+  const lines: string[] = []
+  // 表头
+  const header = headerCells.map((c, i) => pad(c, widths[i] ?? 3, aligns[i] ?? 'left')).join(dim(' │ '))
+  lines.push(bold('  ' + header))
+  // 分隔线
+  const sep = widths.map((w, i) => {
+    const a = aligns[i] ?? 'left'
+    if (a === 'right') return '─'.repeat(w - 1) + ':'
+    if (a === 'center') return ':' + '─'.repeat(w - 2) + ':'
+    return '─'.repeat(w)
+  }).join(dim('─┼─'))
+  lines.push(dim('  ' + sep))
+  // 表体
+  for (const row of bodyRows) {
+    const r = row.map((c, i) => pad(c, widths[i] ?? 3, aligns[i] ?? 'left')).join(dim(' │ '))
+    lines.push('  ' + r)
+  }
+  return lines.join('\n')
+}
+
+// ── 流式 Markdown ────────────────────────────────────────────────────────────
+
 export function createMarkdownStream(opts: {
   write: (s: string) => void
   prefix?: string
 }): MarkdownStream {
   const prefix = opts.prefix ?? ''
-  // 捕获围栏语言:```ts → lang='ts';闭合围栏 lang=''
   const fenceRe = /^\s*(```+|~~~+)\s*([^\s`]*)/
   let buf = ''
   let inCode = false
   let codeLang = ''
   let hlState: HlState = makeHlState()
 
+  // 表格状态机
+  let tableBuf: string[] = []
+  let tableAligns: TableAlign[] = []
+
+  const flushTable = () => {
+    if (tableBuf.length < 2) {
+      // 不够 2 行（表头+分隔）→ 当普通文本逐行渲染
+      for (const l of tableBuf) emit(renderBlockLine(l))
+    } else {
+      emit(renderTable(tableBuf, tableAligns, useColor))
+    }
+    tableBuf = []
+    tableAligns = []
+  }
+
   const emit = (rendered: string) => {
-    // 空行只发换行，避免留下「前缀空格 + 换行」的可见尾随空白
     opts.write(rendered.length ? prefix + rendered + '\n' : '\n')
   }
 
   const handleLine = (line: string) => {
+    // 代码块优先
     const f = fenceRe.exec(line)
     if (f) {
+      flushTable()
       if (!inCode) {
         inCode = true
         codeLang = (f[2] || '').toLowerCase()
-        hlState = makeHlState() // 每个代码块独立的跨行块注释状态
+        hlState = makeHlState()
       } else {
         inCode = false
         codeLang = ''
       }
-      emit(C.dim(line.trim())) // 围栏标记本身按 dim 显示
+      emit(C.dim(line.trim()))
       return
     }
     if (inCode) {
-      emit(highlightLine(line, codeLang, hlState)) // 代码块内:语法高亮,不做行内 Markdown 解析
+      emit(highlightLine(line, codeLang, hlState))
       return
     }
-    emit(renderBlockLine(line))
+
+    // 表格状态机
+    if (isTableSep(line)) {
+      if (tableBuf.length === 1) {
+        tableBuf.push(line)
+        tableAligns = parseAligns(line)
+      } else {
+        flushTable()
+        emit(renderBlockLine(line))
+      }
+    } else if (isTableRow(line)) {
+      tableBuf.push(line)
+    } else {
+      flushTable()
+      emit(renderBlockLine(line))
+    }
   }
 
   return {
@@ -133,6 +247,7 @@ export function createMarkdownStream(opts: {
       }
     },
     end() {
+      flushTable()
       if (buf.length > 0) {
         handleLine(buf)
         buf = ''

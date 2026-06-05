@@ -26,8 +26,3 @@ export function getFactory(): ModelClientFactory {
   if (!_factory) _factory = new DefaultModelClientFactory()
   return _factory
 }
-
-// 测试注入点：允许测试替换工厂实例
-export function setFactory(f: ModelClientFactory): void {
-  _factory = f
-}
