@@ -99,7 +99,7 @@ if (fsSkills.length > 0) {
   )
 }
 
-const VERSION = '0.14.0'
+const VERSION = '0.14.1'
 
 // 会话工厂、工具注册、权限策略等核心构造逻辑已提取到 session-factory.ts。
 // 以下仅保留 CLI 特有的输出函数 printSessions（写 stderr，依赖 sessionsText）。

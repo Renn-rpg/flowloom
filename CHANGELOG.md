@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.1] — .env 加载时序修复
+
+### Bug Fixes
+- **`.env` 覆盖对 import 期环境常量不生效**:`session-factory` 的 `CONTEXT_TOKENS` / `MAX_TOKENS` / `REASONER_MODEL` 在 import 期求值,而 dotenv `config()` 原先写在 `cli.ts` 模块体里、按 ESM 规则晚于所有 import → 这些常量读不到 `.env`(只有真 shell env 生效)。抽出副作用模块 `src/load-env.ts` 并作为 cli 的**首个 import**,保证 `.env` 先于任何环境常量求值。默认值(含 1M 上下文)不受影响;修复后 `.env` 里设这些变量可真正覆盖。集成验证:临时 `.env`,正确顺序读到覆盖值、错误顺序回退默认。
+
 ## [0.14.0] — parallel sub-agents, live panel & drill-in
 
 ### Features

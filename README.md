@@ -7,7 +7,7 @@
 **An open-source, DeepSeek-native agentic coding CLI — rivaling Claude Code at a fraction of the cost.**
 
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
-[![Version](https://img.shields.io/badge/version-0.14.0-blue)](https://github.com/Renn-rpg/deepseek-flowloom)
+[![Version](https://img.shields.io/badge/version-0.14.1-blue)](https://github.com/Renn-rpg/deepseek-flowloom)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
