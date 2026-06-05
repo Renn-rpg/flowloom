@@ -22,7 +22,7 @@ function listProjectDir(dirRel: string): { name: string; isDir: boolean }[] {
     return []
   }
 }
-import { fmt, visualWidth } from './format.js'
+import { fmt, visualWidth, physicalRows } from './format.js'
 
 // ——— 按键解析 ———
 
@@ -32,6 +32,7 @@ export type Key =
   | { t: 'backspace' }
   | { t: 'delete' }
   | { t: 'tab' }
+  | { t: 'shift-tab' }
   | { t: 'esc' }
   | { t: 'up' }
   | { t: 'down' }
@@ -58,6 +59,8 @@ export function decodeKey(s: string): Key {
       return { t: 'backspace' }
     case '\t':
       return { t: 'tab' }
+    case '\x1b[Z': // Shift+Tab（CSI Z）→ 循环切换模式
+      return { t: 'shift-tab' }
     case '\x03':
       return { t: 'ctrl-c' }
     case '\x04':
@@ -123,7 +126,7 @@ export interface EditorState {
   searchMatch: number
 }
 
-export type EditorAction = 'redraw' | 'submit' | 'cancel' | 'expand-one' | 'expand-all' | 'none'
+export type EditorAction = 'redraw' | 'submit' | 'cancel' | 'expand-one' | 'expand-all' | 'cycle-mode' | 'none'
 
 export interface ReduceResult {
   state: EditorState
@@ -277,6 +280,8 @@ export function reduceKey(state: EditorState, key: Key, items: CompletionItem[],
       return { state, action: 'expand-one' }
     case 'ctrl-e':
       return { state, action: 'expand-all' }
+    case 'shift-tab':
+      return { state, action: 'cycle-mode' }
     default:
       return none()
   }
@@ -291,6 +296,10 @@ export interface ReplReaderOptions {
   promptText?: string | (() => string)
   colorPrompt?: (s: string) => string // 提示符着色（默认绿色 ❯）
   onExpand?: (mode: 'one' | 'all') => void // ctrl+o/ctrl+e 回调
+  onCycleMode?: () => void // Shift+Tab 回调：循环切换 normal/auto-accept/plan
+  // 输入框下方常驻面板行（如状态行 + 模式行）。每帧重新求值 → 切模式立刻反映；
+  // 随输入框一起被 \x1b[J 清除/重绘，故无论是否有滚动区页脚都「永久可见、不只输出时出现」。
+  panelLines?: () => string[]
   maxMenu?: number // 下拉最多展示项数，默认 12
 }
 
@@ -300,6 +309,8 @@ export class ReplReader {
   private promptText: string | (() => string)
   private colorPrompt: (s: string) => string
   private onExpand?: (mode: 'one' | 'all') => void
+  private onCycleMode?: () => void
+  private panelLines?: () => string[]
   private maxMenu: number
   private rl: Interface | null = null
 
@@ -320,6 +331,8 @@ export class ReplReader {
     this.promptText = opts.promptText ?? '❯ '
     this.colorPrompt = opts.colorPrompt ?? ((s) => fmt.green(s))
     this.onExpand = opts.onExpand
+    this.onCycleMode = opts.onCycleMode
+    this.panelLines = opts.panelLines
     this.maxMenu = opts.maxMenu ?? 12
     this.decoder = new StringDecoder('utf8')
   }
@@ -337,31 +350,76 @@ export class ReplReader {
   // 模型输出期间监听中断键:接管 stdin(raw + resume),只识别 ESC(打断本轮)与 Ctrl-C(退出),
   // 吞掉其余输入(避免流式时杂键回显/排队)。返回 disarm() 原样恢复 stdin 状态。非 TTY 返回空函数。
   // 与 questionTTY 用同一套「保存→接管→恢复」手法,确保不与行编辑器的 stdin 接管冲突。
-  watchInterrupt(handlers: { onEsc: () => void; onCtrlC: () => void }): () => void {
+  watchInterrupt(handlers: {
+    onEsc: () => void
+    onCtrlC: () => void
+    // 运行期按 ↓ → 进入全屏钻入视图。onInspect 自管 stdin（本监听器期间已让出），await 其返回后复位。
+    onInspect?: () => Promise<void>
+    // 运行期按 Shift+Tab → 循环切换模式（输出途中也能切，不被吞）。
+    onCycleMode?: () => void
+  }): () => void {
     const input = this.input
     if (!input.isTTY) return () => {}
     const prevData = input.listeners('data') as ((c: Buffer) => void)[]
     const wasRaw = input.isRaw ?? false
     const wasPaused = input.isPaused()
     input.removeAllListeners('data')
+    let busy = false // 钻入视图打开期间，本监听器让出 stdin
+    let disarmed = false // 本轮已结束（disarm 被调用）
+    let escTimer: ReturnType<typeof setTimeout> | null = null // 缓冲 lone ESC，区分独立 ESC 与被拆分的转义序列
+    const restoreOriginal = () => {
+      input.setRawMode?.(wasRaw)
+      for (const l of prevData) input.on('data', l)
+      if (wasPaused) input.pause()
+    }
+    const openInspect = () => {
+      busy = true
+      input.removeListener('data', onData)
+      Promise.resolve(handlers.onInspect!()).finally(() => {
+        busy = false
+        // 视图打开期间若本轮已结束(disarm 被调用)：stdin 当时未还原(见下),此刻补还原到原始态，
+        // **不**重新接管(否则会把中断监听器泄漏到 REPL 提示符)。
+        if (disarmed) { restoreOriginal(); return }
+        input.setRawMode?.(true)
+        input.resume()
+        input.on('data', onData)
+      })
+    }
+    // 把一段(可能含被缓冲 ESC 前缀的)序列分发为语义动作。
+    const dispatchSeq = (s: string): void => {
+      if (handlers.onCycleMode && s === '\x1b[Z') { handlers.onCycleMode(); return } // Shift+Tab → 切模式
+      if (handlers.onInspect && (s === '\x1b[B' || s === '\x1bOB')) { openInspect(); return } // ↓ → 钻入视图
+      // 其余转义序列在模型输出期一律忽略
+    }
     const onData = (chunk: Buffer) => {
-      // 单字节 ESC → 打断本轮(方向键等转义序列是多字节,不会误触)
-      if (chunk.length === 1 && chunk[0] === 0x1b) { handlers.onEsc(); return }
+      if (busy) return
+      // 若上一个 chunk 是被缓冲的 lone ESC：把当前 chunk 接上,作为完整转义序列分发(避免拆分误触)。
+      if (escTimer !== null) {
+        clearTimeout(escTimer)
+        escTimer = null
+        dispatchSeq('\x1b' + chunk.toString('latin1'))
+        return
+      }
       // Ctrl-C(0x03):raw 模式下不会自动产生 SIGINT,这里手动转交退出逻辑
       if (chunk.includes(0x03)) { handlers.onCtrlC(); return }
-      // 其余输入在模型输出期一律忽略
+      // 单字节 ESC：可能是独立 ESC(打断),也可能是被拆分的转义序列首字节。缓冲 12ms 等续着。
+      if (chunk.length === 1 && chunk[0] === 0x1b) {
+        escTimer = setTimeout(() => { escTimer = null; handlers.onEsc() }, 12)
+        return
+      }
+      dispatchSeq(chunk.toString('latin1'))
     }
     input.setRawMode?.(true)
     input.resume()
     input.on('data', onData)
-    let disarmed = false
     return () => {
       if (disarmed) return
       disarmed = true
+      if (escTimer !== null) { clearTimeout(escTimer); escTimer = null }
+      // 钻入视图打开中(busy)：stdin 归视图所有，延迟还原到视图关闭时的 finally 处理。
+      if (busy) return
       input.removeListener('data', onData)
-      input.setRawMode?.(wasRaw)
-      for (const l of prevData) input.on('data', l)
-      if (wasPaused) input.pause()
+      restoreOriginal()
     }
   }
 
@@ -399,9 +457,12 @@ export class ReplReader {
   private questionTTY(): Promise<string | null> {
     const input = this.input
     const out = this.out
-    const promptText = this.resolvePrompt()
-    const promptVis = visualWidth(promptText)
-    const colored = this.colorPrompt(promptText)
+    // 提示符**每帧**重新求值（而非整行读取期只算一次）：模式切换/动态提示符须立刻反映在屏上，
+    // 否则 Shift+Tab 改了状态却看不到任何变化（曾导致「shift+tab 像没反应」）。
+    const promptNow = () => {
+      const text = this.resolvePrompt()
+      return { vis: visualWidth(text), colored: this.colorPrompt(text) }
+    }
 
     return new Promise<string | null>((resolve) => {
       let st = initialEditorState()
@@ -416,6 +477,13 @@ export class ReplReader {
       input.removeAllListeners('keypress')
 
       const restore = () => {
+        // 清掉可能仍挂着的 split-ESC 定时器：否则 question() 已 resolve 后定时器仍会 fire，
+        // 在已关闭/已交还的 stdin 上用失效闭包调用 apply()，造成陈旧状态写入。
+        if (this.pendingEscTimer !== null) {
+          clearTimeout(this.pendingEscTimer)
+          this.pendingEscTimer = null
+          this.pendingEscBuf = []
+        }
         input.removeListener('data', onData)
         input.setRawMode?.(wasRaw)
         for (const l of prevData) input.on('data', l)
@@ -426,6 +494,7 @@ export class ReplReader {
       const tw = out.columns ?? 80
 
       const render = () => {
+        const { vis: promptVis, colored } = promptNow()
         const comp = computeCompletions(st.buffer, { listDir: listProjectDir })
         const open = comp.items.length > 0 && !st.dismissed
         // 滚动窗口：计算 scrollOffset 使 menuIndex 始终可见
@@ -469,6 +538,12 @@ export class ReplReader {
         // ── 下边框 ──
         out.write(`\n${fmt.inputLine(tw)}`)
 
+        // ── 常驻面板行（状态行在上、模式行在下）：贴在输入框下方,与框一起被 \x1b[J 清/重绘。──
+        const panel = this.panelLines?.() ?? []
+        for (const pl of panel) out.write('\n' + pl)
+        // 面板行可能超列宽而折行 → 按**物理行数**计入光标回移(逻辑行数不准会错位)。
+        const panelRows = panel.reduce((n, pl) => n + physicalRows(pl, tw), 0)
+
         // 计算本帧总视觉行数（含 ↑/↓ 滚动指示器）
         const totalWidth = promptVis + visualWidth(st.buffer)
         const inputLines = Math.floor(totalWidth / tw) + 1
@@ -481,14 +556,16 @@ export class ReplReader {
         // 存为 prevRenderHeight，供下次 render 从光标位置回到帧顶
         prevRenderHeight = 1 + cursorLine
 
-        // 光标目前在下边框之后。上移到输入区光标位置（经过 下边框 + 菜单 + 指示器 + 剩余输入行）
-        const linesUpToCursor = 1 + indicatorLines + menu.length + (inputLines - 1 - cursorLine)
+        // 光标目前在最后一条面板行之后。上移到输入区光标位置
+        // （经过 面板物理行 + 下边框 + 菜单 + 指示器 + 剩余输入行）
+        const linesUpToCursor = panelRows + 1 + indicatorLines + menu.length + (inputLines - 1 - cursorLine)
         if (linesUpToCursor > 0) out.write(`\x1b[${linesUpToCursor}A`)
         out.write('\r')
         if (cursorCol > 0) out.write(`\x1b[${cursorCol}C`)
       }
 
       const finalize = () => {
+        const { colored } = promptNow()
         // 光标在输入区，上移回到顶部边框行，清除整个边框区域
         if (prevRenderHeight > 0) out.write(`\x1b[${prevRenderHeight}A`)
         out.write('\r\x1b[J')
@@ -524,7 +601,16 @@ export class ReplReader {
           case 'expand-all': {
             out.write('\r\x1b[0K')
             this.onExpand?.(r.action === 'expand-all' ? 'all' : 'one')
-            prevRenderHeight = 1
+            // onExpand 逐块重渲染、每块尾随 '\n' → 结束时光标已落在展开内容下方的新行上。
+            // 故新帧应**就地**从该行开始画(prevRenderHeight=0:render 不再上移),否则上移 1 行会
+            // 把展开内容的最后一行覆盖掉(实测 bug)。render() 内部随后会把 prevRenderHeight 重置为正常值。
+            prevRenderHeight = 0
+            render()
+            return false
+          }
+          case 'cycle-mode': {
+            // 切模式（cli 侧更新 plan/auto-accept + 重绘页脚）。提示符文案可能随之变（plan/auto）→ 重绘。
+            this.onCycleMode?.()
             render()
             return false
           }

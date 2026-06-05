@@ -95,10 +95,13 @@ export async function executeWorkflow(
     totalCacheHitTokens: 0,
   })
 
-  // 开跑横幅：Enter 后立刻给反馈，避免长任务"看起来没动静"的错觉
-  process.stderr.write(
-    `\n▶ running workflow "${userMeta.name ?? 'workflow'}" (budget ${opts.budgetLimit ?? 1_000_000} tok)…\n`,
-  )
+  // 开跑横幅：Enter 后立刻给反馈，避免长任务"看起来没动静"的错觉。
+  // 有 onEvent（对话内/TTY 面板）时抑制——进度由 UI 渲染。
+  if (!opts.onEvent) {
+    process.stderr.write(
+      `\n▶ running workflow "${userMeta.name ?? 'workflow'}" (budget ${opts.budgetLimit ?? 1_000_000} tok)…\n`,
+    )
+  }
 
   // Phase 3: 构建执行环境 — 所有共享实例
   const executor = new AgentExecutor({
@@ -173,24 +176,39 @@ export async function executeWorkflow(
 
     // 硬控 2: 信号量获取（排队等待）。
     // seq 在信号量获取之后分配，确保并发场景下 seq 唯一且与执行顺序一致。
-    const release = await semaphore.acquire()
+    let release = await semaphore.acquire()
+    // 暂停闸（drill-in 的 p pause）：暂停时归还额度并等待恢复，不阻塞在跑的 agent。
+    while (opts.isPaused?.() && !opts.signal?.aborted) {
+      release()
+      await (opts.waitForResume?.() ?? Promise.resolve())
+      release = await semaphore.acquire()
+    }
 
     // seq 在 acquire 之后分配（已串行化），保证唯一 + 单调。
     const currentSeq = seq++
 
     let t0 = 0
     try {
+      // 中断预检（drill-in 的 x stop）：已中断则不再开跑，直接走失败记录。
+      if (opts.signal?.aborted) throw new Error('aborted by user')
       // 硬控 3: 预算预检（保守估计至少消耗 10 tokens）
       budget.assertHasBudget(10)
 
       liveCalls++
 
-      // 实时进度：真正开跑时（拿到信号量后）落一行，避免长任务全程静默
-      process.stderr.write(`  → [${currentSeq}] ${label} …\n`)
+      // 进度：有 onEvent 时发结构化事件（UI 渲染）；否则落一行 stderr（floom run 非 TTY 兜底）。
+      const emit = opts.onEvent
+      let toolCount = 0
+      if (emit) emit({ kind: 'agent-start', seq: currentSeq, label, phase: agentOpts?.phase, model: opts.model ?? 'deepseek-chat' })
+      else process.stderr.write(`  → [${currentSeq}] ${label} …\n`)
       t0 = Date.now()
 
-      // 用 executor.agent() 拿 AgentResult（含 usage），而非 execute()
-      const r = await executor.agent(prompt, agentOpts)
+      // 用 executor.agent() 拿 AgentResult（含 usage）；hooks 把每个内部工具调用回吐给 UI，
+      // 并把中断信号贯穿到子 agent 的 runTurn。
+      const r = await executor.agent(prompt, agentOpts, {
+        onToolCall: emit ? (name) => { toolCount++; emit({ kind: 'agent-tool', seq: currentSeq, name }) } : undefined,
+        signal: opts.signal,
+      })
       const text = r.text
 
       // 回写用量
@@ -201,9 +219,14 @@ export async function executeWorkflow(
       // 记账：按实际 output tokens charge（+ input tokens 的保守估值）
       budget.charge(r.usage.outputTokens + r.usage.inputTokens)
 
-      process.stderr.write(
-        `  ✓ [${currentSeq}] ${label}  (${((Date.now() - t0) / 1000).toFixed(1)}s · ${r.usage.outputTokens} tok)\n`,
-      )
+      if (emit) {
+        emit({ kind: 'agent-usage', seq: currentSeq, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens })
+        emit({ kind: 'agent-done', seq: currentSeq, tokens: r.usage.outputTokens, tools: toolCount, ms: Date.now() - t0, isError: false })
+      } else {
+        process.stderr.write(
+          `  ✓ [${currentSeq}] ${label}  (${((Date.now() - t0) / 1000).toFixed(1)}s · ${r.usage.outputTokens} tok)\n`,
+        )
+      }
 
       const record: CallRecord = {
         runId,
@@ -223,7 +246,11 @@ export async function executeWorkflow(
         e instanceof Error && e.name === 'BudgetExhaustedError'
           ? 'budget exhausted'
           : `failed: ${(e as Error).message}`
-      process.stderr.write(`  ✗ [${currentSeq}] ${label}  ${why}\n`)
+      if (opts.onEvent) {
+        opts.onEvent({ kind: 'agent-done', seq: currentSeq, tokens: 0, tools: 0, ms: t0 ? Date.now() - t0 : 0, isError: true, error: why })
+      } else {
+        process.stderr.write(`  ✗ [${currentSeq}] ${label}  ${why}\n`)
+      }
       const record: CallRecord = {
         runId,
         seq: currentSeq, // 复用进入时分配的 seq，避免主键冲突覆盖已成功记录
@@ -269,12 +296,14 @@ export async function executeWorkflow(
 
     phase: (title: string) => {
       const msg = `\n[phase] ${title}`
-      process.stderr.write(msg + '\n')
+      if (opts.onEvent) opts.onEvent({ kind: 'phase', title })
+      else process.stderr.write(msg + '\n')
       logs.push(msg)
     },
 
     log: (msg: string) => {
-      process.stderr.write(`  ${msg}\n`)
+      if (opts.onEvent) opts.onEvent({ kind: 'log', message: msg })
+      else process.stderr.write(`  ${msg}\n`)
       logs.push(msg)
     },
 

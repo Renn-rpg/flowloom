@@ -122,6 +122,24 @@ export interface AgentResult {
   object?: Record<string, unknown>
 }
 
+// 工作流执行期的进度事件（喂给 UI：footer 摘要 / 钻入视图 / floom run phase 树）。
+// 引擎只发结构化事件，不碰 ANSI——渲染层（cli）订阅后自行渲染。seq 与 agent_calls 的
+// seq 一致，便于把后续 tool/usage/done 事件关联到同一次 agent() 调用。
+export type WorkflowEvent =
+  | { kind: 'phase'; title: string }
+  | { kind: 'agent-start'; seq: number; label: string; phase?: string; model: string }
+  | { kind: 'agent-tool'; seq: number; name: string }
+  | { kind: 'agent-usage'; seq: number; inputTokens: number; outputTokens: number }
+  | { kind: 'agent-done'; seq: number; tokens: number; tools: number; ms: number; isError: boolean; error?: string }
+  | { kind: 'log'; message: string }
+
+// agent() 执行期的内部回调（不进 DSL opts，故不影响 resume 的 callHash）。
+export interface AgentExecHooks {
+  onToolCall?: (name: string) => void
+  onToolResult?: (name: string, ms: number, isError: boolean) => void
+  signal?: AbortSignal
+}
+
 // executeWorkflow 入参
 export interface WorkflowRunOptions {
   scriptPath: string
@@ -136,6 +154,13 @@ export interface WorkflowRunOptions {
   system?: string
   forceReload?: boolean
   workspacePath?: string
+  // 进度事件回调。存在时引擎抑制 per-agent stderr 流（由 UI 渲染），仍保留最终 [usage] 行。
+  onEvent?: (e: WorkflowEvent) => void
+  // 中断（drill-in 的 x stop）：贯穿到每次 agent() 的 runTurn；预检在 acquire 前。
+  signal?: AbortSignal
+  // 暂停闸（drill-in 的 p pause）：isPaused()=true 时暂缓启动新 agent（已在跑的跑完）。
+  isPaused?: () => boolean
+  waitForResume?: () => Promise<void>
 }
 
 // executeWorkflow 返回值

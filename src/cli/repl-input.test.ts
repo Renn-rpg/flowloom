@@ -27,12 +27,15 @@ describe('decodeKey', () => {
     expect(decodeKey('\x1b[F')).toEqual({ t: 'end' })
     expect(decodeKey('\x1b[3~')).toEqual({ t: 'delete' })
   })
+  it('maps Shift+Tab (CSI Z) to shift-tab', () => {
+    expect(decodeKey('\x1b[Z')).toEqual({ t: 'shift-tab' })
+  })
   it('maps printable chars and pastes', () => {
     expect(decodeKey('a')).toEqual({ t: 'char', ch: 'a' })
     expect(decodeKey('hello')).toEqual({ t: 'char', ch: 'hello' })
   })
   it('treats unrecognized escape sequences as unknown', () => {
-    expect(decodeKey('\x1b[Z')).toEqual({ t: 'unknown' }) // shift-tab
+    expect(decodeKey('\x1b[99~')).toEqual({ t: 'unknown' })
   })
   it('maps lone ESC as esc (IO shell handles split-ESC buffering)', () => {
     expect(decodeKey('\x1b')).toEqual({ t: 'esc' })
@@ -63,6 +66,15 @@ function st(partial: Partial<EditorState> = {}): EditorState {
 }
 
 const reduce = (s: EditorState, key: Key, it: CompletionItem[] = []) => reduceKey(s, key, it)
+
+describe('reduceKey: shift-tab', () => {
+  it('emits a cycle-mode action and leaves the buffer untouched', () => {
+    const r = reduce(st({ buffer: 'half typed', cursor: 4 }), { t: 'shift-tab' })
+    expect(r.action).toBe('cycle-mode')
+    expect(r.state.buffer).toBe('half typed')
+    expect(r.state.cursor).toBe(4)
+  })
+})
 
 describe('reduceKey: editing', () => {
   it('inserts a char at the cursor and advances', () => {
@@ -214,5 +226,33 @@ describe('ReplReader (IO shell)', () => {
     for (const c of ['o', 'k', '\r']) { input.write(c); await tick() }
     expect(await p2).toBe('ok')
     expect(out.text).toContain('floom> ')
+  })
+
+  it('renders panelLines below the input box and re-evaluates them every frame', async () => {
+    const input = fakeTTY()
+    const out = sink()
+    let mode = 'normal'
+    const reader = new ReplReader({
+      input: input as unknown as NodeJS.ReadStream,
+      out: out as unknown as NodeJS.WriteStream,
+      promptText: '❯ ',
+      colorPrompt: (s) => s,
+      // 模拟 cli 的状态行+模式行：每帧重新求值（Shift+Tab 切模式须立刻反映）。
+      panelLines: () => ['STATUS deepseek', `MODE:${mode}`],
+    })
+    const p = reader.question()
+    await tick()
+    input.write('a') // 触发一次 render
+    await tick()
+    expect(out.text).toContain('STATUS deepseek')
+    expect(out.text).toContain('MODE:normal')
+
+    mode = 'plan' // 模拟 Shift+Tab 切换
+    input.write('b') // 触发重绘 → 面板行应反映新模式
+    await tick()
+    expect(out.text).toContain('MODE:plan')
+
+    input.write('\r')
+    expect(await p).toBe('ab')
   })
 })

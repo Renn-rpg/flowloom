@@ -35,6 +35,7 @@ export interface SlashResult {
   compact?: boolean
   retry?: boolean
   interactiveSessions?: boolean // /sessions → 交互式会话管理
+  openWorkflows?: boolean // /workflows → 打开最近一次 agent run 的钻入视图
 }
 
 interface SlashSpec {
@@ -61,6 +62,7 @@ export const SLASH_COMMANDS: Record<string, SlashSpec> = {
   config: { usage: '/config', desc: 'show effective settings' },
   cron: { usage: '/cron', desc: 'list scheduled cron jobs' },
   status: { usage: '/status', desc: 'toggle the status bar on/off' },
+  workflows: { usage: '/workflows', desc: 'inspect the most recent parallel/workflow agent run' },
   retry: { usage: '/retry', desc: 'retry the last failed turn' },
   'deep-review': { usage: '/deep-review', desc: 'adversarial multi-agent code review (correctness + security)' },
   exit: { usage: '/exit', desc: 'quit floom' },
@@ -237,6 +239,8 @@ export function runSlash(line: string, ctx: SlashContext): SlashResult {
     }
     case 'retry':
       return { handled: true, retry: true }
+    case 'workflows':
+      return { handled: true, openWorkflows: true }
     case 'code-review':
     case 'simplify':
     case 'architect':

@@ -7,7 +7,7 @@
 **一个开源、DeepSeek 原生的 agentic 编码 CLI —— 以零头成本对标 Claude Code。**
 
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
-[![Version](https://img.shields.io/badge/version-0.13.0-blue)](https://github.com/Renn-rpg/deepseek-flowloom)
+[![Version](https://img.shields.io/badge/version-0.14.0-blue)](https://github.com/Renn-rpg/deepseek-flowloom)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
@@ -118,6 +118,14 @@ floom run audit.mjs --budget 500000
 实时逐 token 流式输出。最终答案在终端按 **Markdown 渲染**(标题/列表/引用/强调),代码块带**语法高亮**。输入 **`@`** 弹出文件/目录选择器、在句中引用路径(`@src/cli.ts`)。响应过程中随时按 **`ESC`** 即可中止本轮、退回提示符;`Ctrl-O` 展开折叠的细节。
 
 REPL 行首前缀:**`!命令`** 直接跑 shell(透传)、**`#笔记`** 存为持久记忆、**`@路径`** 引用文件。
+
+### 🚀 并行子 agent + 实时面板
+
+- **`dispatch_agents` 并发扇出**:一次派出 N 个独立子 agent **同时**工作(信号量限流),不再一个个串行。适合「并行探索/审计/研究多个目标」。
+- **固定底部页脚**:常驻状态区显示 *模型 · 思考档位 · context 进度 · 模式*;有并行运行时多一行 `⟳ 6/7 agents · 1m21s · ↓ inspect` 摘要。
+- **Shift+Tab 切模式**:`normal`(shell 逐条确认) → `auto-accept`(shell 自动放行) → `plan`(只读、先出计划)循环。
+- **↓ 钻入视图**:运行中按 **↓** 进入全屏,逐个查看子 agent 的 *model / tokens / 工具数 / 耗时 / 状态*;`x` 停 · `p` 暂停/恢复 · `s` 存档 · `esc` 返回。`/workflows` 可回看最近一次运行。
+- **`workflow` 工具(--yolo)**:让模型用一段 JS 脚本编排多阶段(phase/parallel/pipeline/budget)工作流,进度同样进面板/钻入视图。`floom run` 在 TTY 下也复用同一套实时渲染 + 每 agent 汇总表。
 
 ### 💾 确定性 Resume
 

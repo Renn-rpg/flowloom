@@ -43,6 +43,9 @@ export interface RunTurnCallbacks {
   onThinkingDone?: (ms: number) => void
   onToolCall?: (name: string, input: Record<string, unknown>) => void
   onToolResult?: (name: string, ms: number, isError: boolean) => void
+  // 发起下一次 generate 前的闸：UI 据此在「全屏钻入视图打开」时挂起模型继续输出，
+  // 避免流式文本写进 alt-screen 缓冲后被吞。缺省不阻塞。
+  beforeGenerate?: () => void | Promise<void>
   // 发请求前丢弃了过旧历史时触发（非静默：调用方应提示用户）
   onContextTrim?: (info: {
     droppedRounds: number
@@ -98,6 +101,11 @@ export async function runTurn(
   for (let iter = 0; iter < s.maxIters; iter++) {
     // 用户中断(如 ESC):在每轮迭代起点(工具执行后/下一次 generate 前)尽早退出。
     if (opts?.signal?.aborted) throw makeAbortError()
+    // UI 闸:钻入视图(alt-screen)打开期间挂起,等关闭后再 generate,防止流式文本写进 alt 缓冲被吞。
+    if (callbacks.beforeGenerate) {
+      await callbacks.beforeGenerate()
+      if (opts?.signal?.aborted) throw makeAbortError()
+    }
     callbacks.onThinking?.()
 
     // 保存快照：若 generate 异常，恢复消息数组以避免工具结果孤儿

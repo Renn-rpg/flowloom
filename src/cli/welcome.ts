@@ -87,6 +87,12 @@ export function showWelcome(opts: {
     )
     out.push(
       border(
+        chalk.dim('  ') + chalk.cyan('Shift+Tab') + chalk.dim(' mode  ·  ') +
+        chalk.cyan('↓') + chalk.dim(' inspect agents  ·  ') + chalk.cyan('Esc') + chalk.dim(' interrupt'),
+      ),
+    )
+    out.push(
+      border(
         chalk.dim('  ') + chalk.cyan('/exit') + chalk.dim(' quit  ·  ') +
         chalk.cyan('Ctrl+C') + chalk.dim(' cancel  ·  ') + chalk.cyan('--yolo') + chalk.dim(' off'),
       ),

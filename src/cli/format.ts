@@ -57,6 +57,19 @@ export function physicalRows(line: string, columns: number): number {
   return Math.max(1, Math.ceil(w / columns))
 }
 
+// 时长（ms → 人类可读）：>=1h → 1h2m；>=1m → 1m2s；否则 Ns。footer / workflow-view / status 共用。
+export function fmtDuration(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s >= 3600) return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`
+  if (s >= 60) return `${Math.floor(s / 60)}m${s % 60}s`
+  return `${s}s`
+}
+
+// token 数缩写：>=10k → 12k；>=1k → 1.2k；否则原值。
+export function fmtTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n)
+}
+
 // 计算字符串在终端上的视觉宽度：CJK/全角/Emoji 占 2 列，其余占 1 列。
 // 从 repl-input.ts 移入，供 blocks.ts 和 format.ts 共享。
 export function visualWidth(s: string): number {

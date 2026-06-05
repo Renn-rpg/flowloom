@@ -40,6 +40,35 @@ describe('runTurn', () => {
     expect(await runTurn(s, 'hi', (d) => texts.push(d))).toBe('ok')
   })
 
+  it('awaits beforeGenerate before each generate (overlay gate)', async () => {
+    const order: string[] = []
+    const client: ModelClient = { generate: async () => { order.push('generate'); return r({ text: 'done' }) } }
+    const s = createSession({ client, registry: new ToolRegistry(), system: 'sys', model: 'm', maxTokens: 100 })
+    let release: () => void = () => {}
+    const gate = new Promise<void>((res) => { release = res })
+    let blocked = true
+    const p = runTurn(s, 'hi', {
+      beforeGenerate: async () => { order.push('gate'); if (blocked) { await gate; blocked = false } },
+    })
+    await new Promise((res) => setTimeout(res, 10))
+    expect(order).toEqual(['gate']) // generate 被挂起，未执行
+    release()
+    expect(await p).toBe('done')
+    expect(order).toEqual(['gate', 'generate'])
+  })
+
+  it('does not call generate if aborted while beforeGenerate is awaiting', async () => {
+    const ac = new AbortController()
+    let generated = false
+    const client: ModelClient = { generate: async () => { generated = true; return r({ text: 'x' }) } }
+    const s = createSession({ client, registry: new ToolRegistry(), system: 'sys', model: 'm', maxTokens: 100 })
+    const p = runTurn(s, 'hi', {
+      beforeGenerate: async () => { ac.abort(); await new Promise((res) => setTimeout(res, 5)) },
+    }, { signal: ac.signal })
+    await expect(p).rejects.toThrow(/aborted/)
+    expect(generated).toBe(false)
+  })
+
   it('fires onThinking and onThinkingDone callbacks', async () => {
     const client = scriptedClient([r({ text: 'ok' })])
     const s = createSession({ client, registry: new ToolRegistry(), system: 'sys', model: 'm', maxTokens: 100 })

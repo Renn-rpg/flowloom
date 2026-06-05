@@ -29,7 +29,7 @@ export interface FloomSettings {
 
 const DEFAULT_SETTINGS: FloomSettings = {
   maxTokens: 8192,
-  contextTokens: 0,
+  contextTokens: 1_000_000, // 默认 1M 上下文窗口（对齐 deepseek-v4-pro；owner 设定，可 env/配置覆盖，0=关闭裁剪）
 }
 
 // 简单深层合并（仅 2 层，符合 settings 结构）

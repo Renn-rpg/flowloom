@@ -31,7 +31,14 @@ export interface ToolPolicy {
 }
 
 // ── 常量 ───────────────────────────────────────────────────────────────────
-export const CONTEXT_TOKENS = Math.max(0, Number(process.env.FLOOM_CONTEXT_TOKENS) || 0)
+// 上下文裁剪自保护预算（≈4 字符/token 估算超过它就从最旧对话轮整轮丢弃）。
+// 默认 1M：对齐旗舰 deepseek-v4-pro 的窗口（owner 设定，非官方实测）。显式设 FLOOM_CONTEXT_TOKENS=0 关闭。
+export const CONTEXT_TOKENS = (() => {
+  const raw = process.env.FLOOM_CONTEXT_TOKENS
+  if (raw === undefined || raw === '') return 1_000_000
+  const v = Number(raw)
+  return Number.isFinite(v) && v >= 0 ? v : 1_000_000
+})()
 export const REASONER_MODEL = process.env.FLOOM_REASONER_MODEL || (process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro')
 export const MAX_TOKENS = Math.max(1, Number(process.env.FLOOM_MAX_TOKENS) || 8192)
 
@@ -41,11 +48,12 @@ export function makeSystem(model: string, planMode = false): string {
   return (
     `You are running inside FlowLoom, an open-source agentic coding CLI. FlowLoom is the tool/harness, not the AI itself: your underlying language model is DeepSeek (model id: "${model}"), served over its OpenAI-compatible API. ` +
     `If the user asks which model or AI you are, answer honestly and directly — you are the DeepSeek "${model}" model running inside the FlowLoom CLI. Do not claim to be a different model, and do not refuse or deflect the question. ` +
-    `Use the provided tools (read_file, write_file, edit_file, multi_edit, run_shell, glob, grep, web_fetch, web_search, dispatch_agent) to inspect and modify the user's project. Use glob to find files by name pattern and grep to search file contents before reading; prefer edit_file for a single small change and multi_edit for several changes to one file; use web_fetch to read a known URL and web_search to discover pages when you don't have a URL; call a tool whenever you need file contents or to run a command. ` +
+    `Use the provided tools (read_file, write_file, edit_file, multi_edit, run_shell, glob, grep, web_fetch, web_search, dispatch_agent, dispatch_agents) to inspect and modify the user's project. Use glob to find files by name pattern and grep to search file contents before reading; prefer edit_file for a single small change and multi_edit for several changes to one file; use web_fetch to read a known URL and web_search to discover pages when you don't have a URL; call a tool whenever you need file contents or to run a command. ` +
     `Additional tools are also available: git_* (diff, status, log, commit, branch, …) for version control, task_create/task_update/task_list for tracking multi-step work, remember for persisting durable facts, and cron_* for scheduled jobs. Inspect the full tool list rather than assuming only the core file tools exist. ` +
     `When the user writes "@<path>" (e.g. @src/cli.ts), treat it as an explicit reference to that file or directory — read it with read_file (or list it) before answering, since they are pointing you at it on purpose. ` +
     `For long-running commands (dev servers, watchers, builds) call run_shell with background:true — it returns a task id immediately; read its output with bash_output and stop it with kill_shell instead of blocking. ` +
-    `Use dispatch_agent to delegate a large, self-contained subtask (e.g. broad codebase exploration or a focused multi-step investigation) to an isolated sub-agent — it keeps that work out of this conversation and returns a summary; pass it a complete standalone task description.` +
+    `Use dispatch_agent to delegate ONE large, self-contained subtask to an isolated sub-agent — it keeps that work out of this conversation and returns a summary; pass it a complete standalone task description. ` +
+    `When you have SEVERAL independent subtasks that can run at the same time (e.g. explore/audit/research N things at once), use dispatch_agents to fan them out CONCURRENTLY in a single call — strongly prefer it over many sequential dispatch_agent calls. ` +
     (planMode
       ? `\n\nPLAN MODE IS ACTIVE. Do NOT make any changes yet — writing/editing files, running shell commands, dispatching sub-agents, and MCP tools are all BLOCKED. Use ONLY the read-only tools (read_file, glob, grep, web_fetch, web_search) to investigate. When you have a concrete, complete plan, call exit_plan_mode with the full plan text and wait for the user to approve it. Only after approval will the editing tools be unblocked.`
       : '')
@@ -116,11 +124,13 @@ export function makeSession(
 
 // ── Shell 审批策略 ─────────────────────────────────────────────────────────
 
-export function makeInteractiveShell(label = ''): ShellPolicy {
+// isAuto：auto-accept 模式断言（Shift+Tab 切到 auto-accept 时返回 true）→ shell 自动放行，
+// 不弹确认。与会话内「不再询问」（allowAll）正交：任一为真即放行。
+export function makeInteractiveShell(label = '', isAuto?: () => boolean): ShellPolicy {
   let allowAll = false
   return {
     authorize: async (cmd) => {
-      if (allowAll) return true
+      if (allowAll || isAuto?.()) return true
       stopActiveSpinner()
       const shown = cmd.length > 200 ? cmd.slice(0, 200) + '…' : cmd
       const choice = await selectMenu(

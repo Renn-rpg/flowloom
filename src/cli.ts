@@ -34,10 +34,14 @@ import { connectMcpServers } from './mcp/manager.js'
 import { runTurn, type ToolGate } from './agent/loop.js'
 import { compactMessages } from './agent/compaction.js'
 import { makeDispatchAgentTool } from './agent/subagent.js'
+import { makeDispatchAgentsTool } from './agent/dispatch-many.js'
+import { AgentTracker } from './cli/agent-tracker.js'
 import { makeExitPlanModeTool, planModeGate } from './agent/plan.js'
 import type { Tool } from './tools/types.js'
 import { SessionStore } from './agent/session-store.js'
 import { executeWorkflow } from './workflow/workflow-runtime.js'
+import { makeWorkflowTool } from './workflow/workflow-tool.js'
+import type { WorkflowEvent } from './workflow/types.js'
 import { NodeVmRuntime, IsolatedVmRuntime } from './workflow/sandbox.js'
 import { createSpinner, stopActiveSpinner, stopBlinking } from './cli/spinner.js'
 import { fmt, physicalRows } from './cli/format.js'
@@ -45,6 +49,10 @@ import { showWelcome } from './cli/welcome.js'
 import { renderDiff } from './cli/diff.js'
 import { createMarkdownStream, type MarkdownStream } from './cli/markdown.js'
 import { createStatusBar, renderStatusBar } from './cli/status-bar.js'
+import { Footer, supportsFooter, ctxWindow, composeStatusLine, composeModeLine, composeRunLine, type FooterState, type Mode } from './cli/footer.js'
+import { runProgress, type RunGroup } from './cli/agent-tracker.js'
+import { openWorkflowView, type WorkflowViewCtl } from './cli/workflow-view.js'
+import { estimateTokens } from './agent/context.js'
 import { BlockManager } from './cli/blocks.js'
 import { MemoryStore, memorySlug, type MemoryEntry } from './memory/store.js'
 import { formatRecall } from './memory/recall.js'
@@ -94,7 +102,7 @@ if (fsSkills.length > 0) {
   )
 }
 
-const VERSION = '0.13.0'
+const VERSION = '0.14.0'
 
 // 会话工厂、工具注册、权限策略等核心构造逻辑已提取到 session-factory.ts。
 // 以下仅保留 CLI 特有的输出函数 printSessions（写 stderr，依赖 sessionsText）。
@@ -136,6 +144,10 @@ async function runTurnWithUI(
   ui: UiState,
   // 中断装置（REPL+TTY 才传）：注册中断回调,返回 disarm()。模型输出期接管 stdin 监听 ESC/Ctrl-C。
   armInterrupt?: (onInterrupt: (kind: 'esc' | 'ctrl-c') => void) => () => void,
+  // 重绘固定页脚（页脚启用时传 footer.paint）。内容区的 ED(\x1b[0J) 会擦到页脚，写完即重绘补回。
+  repaintFooter?: () => void,
+  // 「下一次 generate 前」闸：钻入视图打开期间挂起模型输出，防流式文本写进 alt 缓冲被吞。
+  awaitOverlay?: () => Promise<void>,
 ) {
   const startTime = Date.now()
   // 终端标题:turn 进行中显示任务摘要(标签页可见在跑什么),结束在 finally 复位为 idle。
@@ -221,6 +233,7 @@ async function runTurnWithUI(
 
   try {
     await runTurn(session, task, {
+      beforeGenerate: awaitOverlay,
       onReasoning: (delta) => {
         reasoningBuf += delta
         // 折叠模式（默认）：不流式打印思考链，spinner 继续转；turn 结束后可 ctrl+o 展开。
@@ -340,6 +353,7 @@ async function runTurnWithUI(
           } catch { /* skip */ }
         }
         pendingDiff = null
+        repaintFooter?.() // 工具行覆盖用了 \x1b[0J 会擦到页脚 → 补画
       },
     }, { signal: turnAbort.signal })
   } catch (e) {
@@ -359,6 +373,7 @@ async function runTurnWithUI(
   if (interrupted) {
     process.stderr.write(fmt.yellow('\n  ⎋ interrupted\n'))
     if (ui.hasRepl) process.stderr.write('\x1b[?25h') // 恢复光标给 REPL
+    repaintFooter?.()
     // 弹出本次未应答的 user 消息,保持历史一致(与出错路径一致)
     const last = session.messages[session.messages.length - 1]
     if (last?.role === 'user') session.messages.pop()
@@ -376,6 +391,7 @@ async function runTurnWithUI(
   ui.lastTurnSummary = summary
   process.stderr.write(summary + '\n')
   if (ui.hasRepl) process.stderr.write('\x1b[?25h') // 恢复光标给 REPL
+  repaintFooter?.()
 }
 
 const program = new Command()
@@ -467,6 +483,10 @@ program
       if (opts.plan && interactive && !canApprove) {
         process.stderr.write(fmt.yellow('⚠ plan mode needs an interactive terminal; ignoring --plan\n'))
       }
+      // 模式三态（Shift+Tab 循环 normal→auto-accept→plan）。plan 用 planState.active（沿用既有 gate/
+      // system 接线）；auto-accept 用独立标志（shell 自动放行）。两者互斥，由 cycleMode 协调。
+      let autoAccept = false
+      const currentMode = (): Mode => (planState.active ? 'plan' : autoAccept ? 'auto-accept' : 'normal')
       // 后台 shell 管理器（run_shell background:true / bash_output / kill_shell）。会话级单例，
       // 父 + 子 agent 共享；退出时 killAll 清理仍在跑的进程。
       const shells = new BackgroundShells()
@@ -500,6 +520,7 @@ program
         const rendered = ui.blockManager.renderFrom(idx, false)
         for (const line of rendered) process.stderr.write(line + '\n')
         process.stderr.write('\x1b[?25h')
+        footer?.paint() // 原位展开用了 \x1b[J 会擦页脚 → 补画
       }
 
       // 交互模式用自建行编辑器（/ 下拉补全 + ctrl+o + raw-mode 行编辑）；非 TTY 自动降级为
@@ -507,9 +528,18 @@ program
       const reader = interactive
         ? new ReplReader({
             out: process.stderr,
-            promptText: () => (planState.active ? '❯(plan) ' : '❯ '),
+            // 面板开启时:mode 显示在框下方的「模式行」,提示符恒为 '❯ '(用户要求框里不再显示 mode)。
+            // 面板关闭(/status off)或降级终端:把 mode 放进提示符,作为 Shift+Tab 切换的唯一可见反馈。
+            promptText: () => {
+              if (panelEnabled) return '❯ '
+              const m = currentMode()
+              return m === 'plan' ? '❯(plan) ' : m === 'auto-accept' ? '❯(auto) ' : '❯ '
+            },
             colorPrompt: (s: string) => fmt.white(s),
             onExpand,
+            onCycleMode: () => cycleMode(),
+            // 输入态:把状态行+模式行画在输入框正下方(随框一起清/重绘),使其「永久可见、不只输出时出现」。
+            panelLines: () => composePanel(),
           })
         : null
 
@@ -518,10 +548,16 @@ program
         reader.loadHistory(resolve(homedir(), '.floom', 'history.json'))
       }
 
-      // 中断装置:仅在 REPL + TTY 时启用。模型输出期接管 stdin,ESC 打断本轮、Ctrl-C 退出。
+      // 中断装置:仅在 REPL + TTY 时启用。模型输出期接管 stdin:ESC 打断本轮(并停掉在跑的并行 run)、
+      // Ctrl-C 退出、↓ 进钻入视图(仅当有活动 run)、Shift+Tab 切模式。
       const armInterrupt: ((onInterrupt: (kind: 'esc' | 'ctrl-c') => void) => () => void) | undefined =
         reader && process.stdin.isTTY
-          ? (onInterrupt) => reader.watchInterrupt({ onEsc: () => onInterrupt('esc'), onCtrlC: () => onInterrupt('ctrl-c') })
+          ? (onInterrupt) => reader.watchInterrupt({
+              onEsc: () => { activeRunControl?.stop(); onInterrupt('esc') }, // ESC 同时中止并行 run 的子 agent
+              onCtrlC: () => onInterrupt('ctrl-c'),
+              onInspect: () => (tracker.current() ? openDrillIn() : Promise.resolve()), // 仅有活动 run 时才进视图,避免吞掉流式文本
+              onCycleMode: () => cycleMode(),
+            })
           : undefined
 
       // 默认：文件工具限定在当前工作目录内；敏感文件防护始终生效（--yolo 不绕过）。
@@ -531,7 +567,7 @@ program
       const shell: ShellPolicy = yolo
         ? allowAllShell
         : canPrompt
-          ? makeInteractiveShell()
+          ? makeInteractiveShell('', () => autoAccept)
           : denyAllShell
 
       const session = makeSession(effectiveModel, { readPaths, writePaths, shell, allowPrivateNet: yolo }, shells)
@@ -557,6 +593,8 @@ program
       session.registry.register(makeRememberTool(memoryStore))
       // Git 工具（17 个）。commit/push/pull/rebase/reset 用独立 shell 策略实例——
       // 避免「bash 不再询问」泄漏到 commit 确认。
+      // git commit/push/… 用独立 shell 实例 + **不受 auto-accept 影响**(高风险操作始终单独确认,
+      // 即便全局切到 auto-accept;保持与既有「commit 确认独立」设计一致)。
       const gitCommitShell = yolo ? allowAllShell : canPrompt ? makeInteractiveShell('git-commit ') : denyAllShell
       registerGitTools(session.registry, gitCommitShell)
       // Task 系统
@@ -626,6 +664,133 @@ program
         if (sb) process.stderr.write(sb + '\n')
       }
 
+      // 多 agent 运行态真相源：dispatch_agent / dispatch_agents / workflow 都把活动喂进来，
+      // 页脚摘要与全屏钻入视图只从它读、订阅 'update' 节流重绘。
+      const tracker = new AgentTracker()
+
+      // ── 固定底部页脚（对标 Claude Code 常驻状态区）──
+      // 现代终端：滚动区页脚（model · effort · ctx% · mode + 运行摘要）。老终端/非交互：null，
+      // 由 updateStatus() 内联状态栏兜底。状态读取在 paint 时求值（闭包延后绑定 currentEffort）。
+      // 模型是否正在输出本轮:为 true 时页脚顶部画一个静态输入框,使「对话框一直存在(含模型回答时)」。
+      // 空闲/输入态由 ReplReader 在滚动区内画可编辑框,页脚此时只画状态行+模式行。
+      let turnActive = false
+      // ctx token 估算的记忆化：输入态的内联面板每次按键都会读 footerState → 不能每键都重算
+      // estimateTokens(含多次 JSON.stringify)。上下文只在「轮之间/消息变化」时改,故按 (消息数:system 长度)
+      // 做键控缓存:打字期间命中缓存(零开销),新增消息/compact 时自动失效重算。
+      let ctxCache = { key: '', val: 0 }
+      const estimateCtx = (): number => {
+        const key = `${session.messages.length}:${session.system.length}`
+        if (ctxCache.key !== key) {
+          ctxCache = { key, val: estimateTokens(session.system, session.messages, session.registry.specs()) }
+        }
+        return ctxCache.val
+      }
+      const footerState = (): FooterState => {
+        const run = tracker.current()
+        return {
+          run: run
+            ? { title: run.title, progress: runProgress(run).label, elapsedMs: Date.now() - run.startedAt, paused: run.status === 'paused' }
+            : null,
+          model: session.model,
+          effort: currentEffort,
+          mode: currentMode(),
+          ctxTokens: estimateCtx(),
+          ctxWindow: ctxWindow(),
+          columns: process.stderr.columns ?? 80,
+          rows: process.stderr.rows ?? 24,
+          showBox: turnActive,
+          backgroundTasks: shells.runningCount(),
+        }
+      }
+      const footer = interactive && supportsFooter() ? new Footer(footerState) : null
+      // 底部面板总开关（/status 切换）：输入态由 ReplReader 内联画，输出态由滚动区页脚画。
+      let panelEnabled = interactive
+      // 输入态的常驻面板行（喂给 ReplReader.panelLines）：运行摘要? + 状态行(上) + 模式行(下)。
+      // 与滚动区页脚共用同一组 compose*，保证输入态/输出态视觉一致。
+      const composePanel = (): string[] => {
+        if (!panelEnabled) return []
+        const s = footerState()
+        const lines: string[] = []
+        if (s.run) lines.push(composeRunLine(s.run, s.columns))
+        lines.push(composeStatusLine(s))
+        lines.push(composeModeLine(s))
+        return lines
+      }
+      tracker.on('update', () => footer?.paint())
+      const footerTimer = setInterval(() => { if (footer && tracker.current()) footer.paint() }, 500)
+      footerTimer.unref?.()
+      // 每轮后刷新底部：面板开启时,输出态有页脚就补画(输入态页脚已撤、由 ReplReader 内联面板显示,
+      // 此处无需画);面板关闭(/status off)时回退老式内联状态栏。
+      const refreshFooter = () => { if (panelEnabled) footer?.paint(); else updateStatus() }
+
+      // 模型输出途中 Shift+Tab 切模式时延后重算 system 的标志。原因:cycleMode→refreshSystem() 会用
+      // plan/normal 的 system **覆盖** session.system,而技能(/skill)执行期 session.system 是技能提示词
+      // → 会被冲掉、技能后续行为错乱。故 turnActive 时只置脏标志,等下一轮开头(技能已恢复 savedSystem)
+      // 再重算。模式的功能效果(shell 自动放行 isAuto、planModeGate)读 live 标志,本就即时生效,不受影响。
+      let systemDirty = false
+      // Shift+Tab 循环模式：normal → auto-accept → plan → normal。plan 需可弹批准菜单（TTY），
+      // 否则跳过 plan 直接回 normal。切完(空闲态)重算 system（plan 须知）+ 重绘底部。
+      const cycleMode = () => {
+        const m = currentMode()
+        if (m === 'normal') { autoAccept = true; planState.active = false }
+        else if (m === 'auto-accept') { autoAccept = false; planState.active = canApprove }
+        else { planState.active = false; autoAccept = false }
+        if (turnActive) systemDirty = true // 输出途中:延后重算,别冲掉技能/本轮 system
+        else refreshSystem()
+        footer?.paint()
+      }
+
+      // ── 钻入视图（Phase 4）控制 ──
+      // 当前活动 run 的控制句柄：由正在跑的工具（dispatch_agents / workflow）在开始时设置、
+      // 结束时清空；钻入视图的 x/p 经它作用到底层执行。
+      let activeRunControl: { stop: () => void; pause: () => void; resume: () => void; isPaused: () => boolean } | null = null
+      // 把一次 run 的摘要落盘 .floom/runs/<id>.md（钻入视图的 s save）。
+      const saveRunSummary = (run: RunGroup | null): string => {
+        if (!run) return 'nothing to save'
+        try {
+          const dir = resolve(process.cwd(), '.floom', 'runs')
+          mkdirSync(dir, { recursive: true })
+          const lines = [
+            `# ${run.title}`,
+            ``,
+            `status: ${run.status} · agents: ${run.rows.length}`,
+            ``,
+            ...run.rows.map((r) => `- ${r.status === 'failed' ? '✗' : '✓'} ${r.label} · ${r.model} · ${r.outputTokens} tok · ${r.toolCalls} tools${r.error ? ` · ERROR: ${r.error}` : ''}`),
+          ]
+          const path = resolve(dir, `${run.id}-${Date.now().toString(36)}.md`)
+          writeFileSync(path, lines.join('\n') + '\n', 'utf8')
+          return `saved → .floom/runs/${basename(path)}`
+        } catch (e) {
+          return `save failed: ${(e as Error).message}`
+        }
+      }
+      const viewCtl: WorkflowViewCtl = {
+        stop: () => activeRunControl?.stop(),
+        pause: () => activeRunControl?.pause(),
+        resume: () => activeRunControl?.resume(),
+        isPaused: () => activeRunControl?.isPaused() ?? false,
+        save: () => saveRunSummary(tracker.last()),
+      }
+      // 钻入视图开关 + 「挂起下一次 generate」闸:视图打开期间模型不得继续流式输出(否则文本写进
+      // alt 缓冲、退出即丢)。runTurn 在每次 generate 前 await awaitOverlay()。
+      let viewOpen = false
+      let viewClosers: Array<() => void> = []
+      const awaitOverlay = (): Promise<void> => (viewOpen ? new Promise<void>((res) => viewClosers.push(res)) : Promise.resolve())
+      // 打开钻入视图：让页脚让出滚动区(进 alt-screen),返回后重建并放行被挂起的 generate。防重入。
+      const openDrillIn = async () => {
+        if (viewOpen) return
+        viewOpen = true
+        footer?.suspend()
+        try {
+          await openWorkflowView(tracker, viewCtl)
+        } finally {
+          footer?.resume()
+          viewOpen = false
+          viewClosers.forEach((r) => r())
+          viewClosers = []
+        }
+      }
+
       // MCP servers（.floom/mcp.json）：连接后把其工具注册进 registry，agent 像用内置工具一样用它们。
       // 无配置 = 不 spawn 任何进程 = 零行为变化。单个 server 失败只告警跳过。
       const mcpConfig = loadMcpConfig(process.cwd())
@@ -653,13 +818,24 @@ program
       // 子 agent 的后台 shell 用**独立实例**，dispatch 结束即 killAll——子 agent 不该留下
       // 父 agent 看不见、控制不了的后台进程（句柄只在子 agent 自己的上下文里）。dispatch 串行执行。
       let subShells: BackgroundShells | null = null
+      // 把单个 dispatch_agent 也映射进 tracker（drill-in 视图统一展示）。SubAgentActivity 无显式
+      // start，故首个事件时惰性建 run+row。dispatch 串行，故单一可变对即可。
+      let dispRunId = ''
+      let dispAgentId = ''
+      const ensureDispRow = () => {
+        if (dispRunId) return
+        dispRunId = tracker.startRun('sub-agent')
+        dispAgentId = tracker.addAgent(dispRunId, { label: 'sub-agent', model: session.model })
+        tracker.agentRunning(dispAgentId)
+      }
       session.registry.register(
         makeDispatchAgentTool({
           client: session.client,
           buildRegistry: () => {
             // 子 agent 用**独立 shell 策略实例**（fresh makeInteractiveShell）：在子 agent 里选
             // 「不再询问」只对该子 agent 生效，不泄漏到父 agent 或后续子 agent（信任边界隔离）。
-            // 路径策略是无状态纯函数，可安全共享。
+            // 路径策略是无状态纯函数，可安全共享。子 agent **不继承** auto-accept(它是父级临时模式,
+            // 不应回溯影响已在跑的子 agent);单 dispatch 串行执行,交互确认安全。
             const subShell: ShellPolicy = yolo
               ? allowAllShell
               : canPrompt
@@ -685,6 +861,8 @@ program
               const ms = a.ms ? fmt.dim(` (${(a.ms / 1000).toFixed(1)}s)`) : ''
               const err = a.isError ? fmt.red(' ✗') : ''
               process.stderr.write(fmt.dim(`  ├─ ${a.name ?? 'tool'}${err}${ms}`) + '\n')
+              ensureDispRow()
+              tracker.agentTool(dispAgentId, a.name ?? 'tool')
             } else if (a.kind === 'tool-done') {
               // tool-done events are suppressed — final status shown inline above
             } else if (a.kind === 'done') {
@@ -696,6 +874,11 @@ program
               subDepth = 0
               subShells?.killAll()
               subShells = null
+              ensureDispRow()
+              tracker.agentDone(dispAgentId, { tokens: a.tokens, tools: a.tools, isError: a.isError })
+              tracker.endRun(dispRunId, a.isError ? 'failed' : 'done')
+              dispRunId = ''
+              dispAgentId = ''
             }
           },
           onUsage: (u) => {
@@ -705,6 +888,130 @@ program
           },
         }),
       )
+
+      // dispatch_agents（并发扇出）：一次跑 N 个独立子 agent。每个子 agent 用独立工具集
+      // （不含任何 dispatch_* → 递归隔离），foreground shell（不给后台句柄，免并发清理复杂度）。
+      // 每个 index 映射成 tracker 的一行；页脚/钻入视图据此实时展示并行进度。
+      // dispatch_* 工具调用在 loop 里串行 → fan* 可变状态无需加锁。
+      let fanRunId = ''
+      let fanAbort: AbortController | null = null
+      let fanPaused = false
+      let fanResumers: Array<() => void> = []
+      const fanIds: string[] = []
+      session.registry.register(
+        makeDispatchAgentsTool({
+          client: session.client,
+          buildRegistry: () => {
+            // 并行扇出：N 个子 agent 同时跑，交互式 shell 审批会并发抢 stdin → 互相打架。
+            // 故受限模式下并行子 agent 的 shell 一律 deny(读/搜/web 仍可用);需要并行跑 shell 用 --yolo。
+            const subShell: ShellPolicy = yolo ? allowAllShell : denyAllShell
+            const reg = makeRegistry({ readPaths, writePaths, shell: subShell, allowPrivateNet: yolo })
+            for (const t of mcpTools) reg.register(t)
+            return reg // 不注册 dispatch_agent/dispatch_agents → 子 agent 无法再派发
+          },
+          system: makeSubAgentSystem(effectiveModel),
+          model: effectiveModel,
+          maxTokens: MAX_TOKENS,
+          contextTokens: CONTEXT_TOKENS,
+          gate: makeGate('sub-agent '),
+          getSignal: () => fanAbort?.signal,
+          isPaused: () => fanPaused,
+          waitForResume: () => new Promise<void>((res) => fanResumers.push(res)),
+          onStart: (labels) => {
+            stopActiveSpinner()
+            fanAbort = new AbortController()
+            fanPaused = false
+            fanResumers = []
+            fanRunId = tracker.startRun('parallel agents')
+            fanIds.length = 0
+            for (const label of labels) fanIds.push(tracker.addAgent(fanRunId, { label, model: session.model }))
+            // 暴露控制句柄给钻入视图（x stop / p pause）。
+            // stop 必须**同时唤醒暂停中的子 agent**(清 fanPaused + 排空 resumers):否则
+            // 「暂停→中止」时它们会永远卡在 await waitForResume(),Promise.all 不解析 → turn 挂死。
+            activeRunControl = {
+              stop: () => { fanAbort?.abort(); fanPaused = false; fanResumers.forEach((r) => r()); fanResumers = [] },
+              pause: () => { if (!fanPaused) { fanPaused = true; if (fanRunId) tracker.setRunStatus(fanRunId, 'paused') } },
+              resume: () => { if (fanPaused) { fanPaused = false; fanResumers.forEach((r) => r()); fanResumers = []; if (fanRunId) tracker.setRunStatus(fanRunId, 'running') } },
+              isPaused: () => fanPaused,
+            }
+          },
+          onActivity: (e) => {
+            const id = fanIds[e.index]
+            if (!id) return
+            if (e.kind === 'start') tracker.agentRunning(id)
+            else if (e.kind === 'tool') tracker.agentTool(id, e.name)
+            else if (e.kind === 'done') tracker.agentDone(id, { tokens: e.tokens, tools: e.tools, isError: e.isError, error: e.error })
+          },
+          onEnd: () => { if (fanRunId) { tracker.endRun(fanRunId, fanAbort?.signal.aborted ? 'failed' : 'done'); fanRunId = '' } activeRunControl = null },
+          onUsage: (u) => {
+            session.usage.inputTokens += u.inputTokens
+            session.usage.outputTokens += u.outputTokens
+            session.usage.cacheHitTokens += u.cacheHitTokens
+          },
+        }),
+      )
+
+      // workflow（对话内多阶段编排工具）：脚本顶层以 Node 权限运行、run(ctx) 走 node:vm（非安全沙箱），
+      // 等价于让模型跑任意代码、绕过路径/shell 守卫 → **仅 --yolo 注册**。受限模式下模型用 dispatch_agents。
+      if (yolo) {
+        let wfRunId = ''
+        let wfAbort: AbortController | null = null
+        let wfPaused = false
+        let wfResumers: Array<() => void> = []
+        const wfSeqToAgent = new Map<number, string>()
+        const onWfEvent = (e: WorkflowEvent) => {
+          if (!wfRunId) return
+          switch (e.kind) {
+            case 'phase': tracker.phaseChange(wfRunId, e.title); break
+            case 'agent-start': {
+              const id = tracker.addAgent(wfRunId, { label: e.label, phase: e.phase, model: e.model })
+              wfSeqToAgent.set(e.seq, id)
+              tracker.agentRunning(id)
+              break
+            }
+            case 'agent-tool': { const id = wfSeqToAgent.get(e.seq); if (id) tracker.agentTool(id, e.name); break }
+            case 'agent-usage': { const id = wfSeqToAgent.get(e.seq); if (id) tracker.agentUsage(id, e); break }
+            case 'agent-done': { const id = wfSeqToAgent.get(e.seq); if (id) tracker.agentDone(id, { tokens: e.tokens, tools: e.tools, isError: e.isError, error: e.error }); break }
+            case 'log': break
+          }
+        }
+        // workflow 内 agent() 的工具集：基础工具 + MCP，不含 dispatch_*/workflow（递归隔离）。
+        const wfRegistry = makeRegistry({ readPaths, writePaths, shell: allowAllShell, allowPrivateNet: yolo })
+        for (const t of mcpTools) wfRegistry.register(t)
+        session.registry.register(
+          makeWorkflowTool({
+            client: session.client,
+            registry: wfRegistry,
+            model: effectiveModel,
+            system: makeSubAgentSystem(effectiveModel),
+            maxTokens: MAX_TOKENS,
+            onEvent: onWfEvent,
+            getSignal: () => wfAbort?.signal,
+            isPaused: () => wfPaused,
+            waitForResume: () => new Promise<void>((res) => wfResumers.push(res)),
+            onStart: () => {
+              stopActiveSpinner()
+              wfAbort = new AbortController()
+              wfPaused = false
+              wfResumers = []
+              wfSeqToAgent.clear()
+              wfRunId = tracker.startRun('workflow')
+              activeRunControl = {
+                stop: () => { wfAbort?.abort(); wfPaused = false; wfResumers.forEach((r) => r()); wfResumers = [] },
+                pause: () => { if (!wfPaused) { wfPaused = true; if (wfRunId) tracker.setRunStatus(wfRunId, 'paused') } },
+                resume: () => { if (wfPaused) { wfPaused = false; wfResumers.forEach((r) => r()); wfResumers = []; if (wfRunId) tracker.setRunStatus(wfRunId, 'running') } },
+                isPaused: () => wfPaused,
+              }
+            },
+            onEnd: () => { if (wfRunId) { tracker.endRun(wfRunId, wfAbort?.signal.aborted ? 'failed' : 'done'); wfRunId = '' } activeRunControl = null },
+            onUsage: (u) => {
+              session.usage.inputTokens += u.inputTokens
+              session.usage.outputTokens += u.outputTokens
+              session.usage.cacheHitTokens += u.cacheHitTokens
+            },
+          }),
+        )
+      }
 
       // exit_plan_mode：计划模式下模型调研完后提交计划；用户方向键批准则关计划模式、解锁全工具。
       let lastPlanText = ''
@@ -748,6 +1055,8 @@ program
       const cleanup = () => {
         if (cleanedUp) return
         cleanedUp = true
+        clearInterval(footerTimer)
+        footer?.remove() // 复位滚动区 + 清页脚（所有退出路径都经此，含 SIGINT/SIGTERM）
         shells.killAll()
         void mcpClose()
       }
@@ -934,8 +1243,21 @@ program
             `  ${j.id}  ${j.expr}  →  "${j.prompt.slice(0, 60)}"  next: ${j.nextRun.slice(0, 19)}`
           ).join('\n')
         },
-        toggleStatus: () => { status.show = !status.show; return status.show },
+        toggleStatus: () => {
+          // 底部面板（输入态内联面板 + 输出态滚动区页脚）统一由 panelEnabled 控制；
+          // 关闭时若正巧装着页脚则撤掉,并回退到老式内联状态栏。下次提示符/下一轮即反映。
+          if (footer || panelEnabled) {
+            panelEnabled = !panelEnabled
+            if (!panelEnabled && footer?.active) footer.remove()
+            return panelEnabled
+          }
+          status.show = !status.show
+          return status.show
+        },
       }
+
+      // 进入 REPL：底部面板按「每轮」装/撤——输入态由 ReplReader 内联画(状态+模式贴在框下),
+      // 输出态(turnActive)才装上滚动区页脚(box+状态+模式)。所有退出路径经 cleanup() 复位。
 
       // lastLine = 上一条 agent prompt(每轮都记,成功/失败均可供 /retry 重跑)。
       // retryRequested = 仅当用户敲 /retry 时置位,消费一次。两者分离 → /retry 不会自激(修无限重试 bug)。
@@ -956,6 +1278,9 @@ program
             line = raw.trim()
             if (line === '') continue
           }
+          // 应用「上一轮输出途中 Shift+Tab 切模式」延后的 system 重算(此刻技能已恢复 savedSystem,
+          // 安全;技能路径稍后会再用自己的提示词覆盖)。详见 cycleMode 的 systemDirty 注释。
+          if (systemDirty) { refreshSystem(); systemDirty = false }
           // 行首 ! / # 前缀:本地直接处理,不进 agent 循环、也不当 slash 命令。
           const directive = parseReplDirective(line)
           if (directive) {
@@ -1000,6 +1325,11 @@ program
               try { const r = await slashCtx.showSessionMenu!(); if (r) process.stderr.write(r + '\n') } catch {}
               continue
             }
+            if (slash.openWorkflows) {
+              if (tracker.last()) { try { await openDrillIn() } catch {} }
+              else process.stderr.write(fmt.dim('  no agent runs yet — dispatch_agents / workflow to start one\n'))
+              continue
+            }
             if (slash.skill) {
               const skill = skillRegistry.get(slash.skill)
               if (skill) {
@@ -1026,9 +1356,14 @@ program
                   }
                   session.system = prompt
                   try {
-                    await runTurnWithUI(session, `${line}`, write, ui, armInterrupt)
+                    turnActive = true // 输出态:装上滚动区页脚
+                    if (panelEnabled) { footer?.install(); footer?.paint() }
+                    await runTurnWithUI(session, `${line}`, write, ui, armInterrupt, () => footer?.paint(), awaitOverlay)
                   } catch (e) {
                     process.stderr.write(fmt.red(`\n  ✗ ${formatApiError(e)}\n`))
+                  } finally {
+                    turnActive = false // 回到输入态:撤掉页脚
+                    footer?.remove()
                   }
                 } finally {
                   session.system = savedSystem
@@ -1094,7 +1429,9 @@ program
           try {
             turnNum++
             if (turnNum > 1) process.stderr.write(fmt.dim(`\n  ── turn ${turnNum} ──\n`))
-            await runTurnWithUI(session, line, write, ui, armInterrupt)
+            turnActive = true // 输出态:装上滚动区页脚(box+状态+模式),正文在其上方滚动
+            if (panelEnabled) { footer?.install(); footer?.paint() }
+            await runTurnWithUI(session, line, write, ui, armInterrupt, () => footer?.paint(), awaitOverlay)
             if (!title) title = line.slice(0, 60)
           } catch (e) {
             process.stderr.write(fmt.red(`\n  ✗ ${(e as Error).message ?? String(e)}\n`))
@@ -1103,11 +1440,14 @@ program
               const last = session.messages[session.messages.length - 1]
               if (last.role === 'user') session.messages.pop()
             }
+          } finally {
+            turnActive = false // 回到输入态:撤掉滚动区页脚,改由 ReplReader 内联画面板(状态+模式)
+            footer?.remove()
           }
           lastLine = line // 记住本轮 prompt(成功或失败都可供 /retry 重跑);不触发自动重试
           process.stdout.write('\n')
           persist()
-          updateStatus()
+          refreshFooter()
         }
       } finally {
         // 任何路径退出（正常 / runTurn 抛错）都清理：关后台进程、关 MCP、关 reader
@@ -1194,6 +1534,42 @@ program
         }
       }
 
+      // TTY：把进度事件喂进共享 tracker，打印分组实时行（phase 头 + 每 agent 起/止），
+      // 跑完再打一张「每 agent: model/tokens/tools/耗时/状态」汇总表。非 TTY：onEvent=undefined →
+      // 引擎沿用扁平 stderr 流（CI/管道行为不变）。
+      const isTty = Boolean(process.stderr.isTTY)
+      const runTracker = new AgentTracker()
+      const runId = runTracker.startRun(basename(resolve(script)))
+      const seqToId = new Map<number, string>()
+      const onEvent = isTty
+        ? (e: WorkflowEvent) => {
+            switch (e.kind) {
+              case 'phase':
+                runTracker.phaseChange(runId, e.title)
+                process.stderr.write(fmt.cyan(`\n▸ ${e.title}\n`))
+                break
+              case 'agent-start': {
+                const id = runTracker.addAgent(runId, { label: e.label, phase: e.phase, model: e.model })
+                seqToId.set(e.seq, id)
+                runTracker.agentRunning(id)
+                process.stderr.write(fmt.dim(`  → ${e.label} …\n`))
+                break
+              }
+              case 'agent-tool': { const id = seqToId.get(e.seq); if (id) runTracker.agentTool(id, e.name); break }
+              case 'agent-usage': { const id = seqToId.get(e.seq); if (id) runTracker.agentUsage(id, e); break }
+              case 'agent-done': {
+                const id = seqToId.get(e.seq)
+                if (id) runTracker.agentDone(id, { tokens: e.tokens, tools: e.tools, isError: e.isError, error: e.error })
+                const label = id ? runTracker.last()?.rows.find((r) => r.id === id)?.label ?? `#${e.seq}` : `#${e.seq}`
+                const icon = e.isError ? fmt.red('  ✗') : fmt.green('  ✓')
+                process.stderr.write(icon + fmt.dim(` ${label}  (${(e.ms / 1000).toFixed(1)}s · ${e.tokens} tok · ${e.tools} tools)\n`))
+                break
+              }
+              case 'log': process.stderr.write(fmt.dim(`  ${e.message}\n`)); break
+            }
+          }
+        : undefined
+
       const result = await executeWorkflow({
         scriptPath: resolve(script),
         args,
@@ -1208,7 +1584,21 @@ program
         system: makeSystem(opts.model),
         runtime,
         forceReload: true,
+        onEvent,
       })
+
+      if (isTty) {
+        runTracker.endRun(runId, result.status === 'failed' ? 'failed' : 'done')
+        const run = runTracker.last()
+        if (run && run.rows.length > 0) {
+          process.stderr.write(fmt.bold(`\n  Agents (${run.rows.length}):\n`))
+          for (const row of run.rows) {
+            const icon = row.status === 'failed' ? fmt.red('✗') : fmt.green('✓')
+            const el = ((row.endedAt ?? Date.now()) - row.startedAt) / 1000
+            process.stderr.write(`  ${icon} ${row.label}  ${fmt.dim(`${row.model} · ${row.outputTokens} tok · ${row.toolCalls} tools · ${el.toFixed(1)}s`)}\n`)
+          }
+        }
+      }
 
       if (result.status === 'done') {
         if (result.result !== undefined) {

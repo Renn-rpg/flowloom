@@ -7,7 +7,7 @@
 **An open-source, DeepSeek-native agentic coding CLI — rivaling Claude Code at a fraction of the cost.**
 
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
-[![Version](https://img.shields.io/badge/version-0.13.0-blue)](https://github.com/Renn-rpg/deepseek-flowloom)
+[![Version](https://img.shields.io/badge/version-0.14.0-blue)](https://github.com/Renn-rpg/deepseek-flowloom)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
@@ -161,6 +161,14 @@ floom run audit.mjs --budget 500000 --sandbox vm
 Real-time token streaming. Answers are rendered as **Markdown** in the terminal (headings, lists, blockquotes, emphasis) with **syntax-highlighted code blocks**. Type **`@`** to pop a file/dir picker and reference a path inline (`@src/cli.ts`). Press **`ESC`** any time during a response to interrupt the current turn and get the prompt back; `Ctrl-O` expands collapsed details.
 
 Input prefixes in the REPL: **`!cmd`** runs a shell command directly (passthrough), **`#note`** saves a persistent memory, **`@path`** references a file.
+
+### 🚀 Parallel Sub-Agents & Live Panel
+
+- **`dispatch_agents` concurrent fan-out**: launch N independent sub-agents that work **at the same time** (semaphore-capped) instead of one after another — ideal for "explore/audit/research N things in parallel".
+- **Sticky bottom footer**: a persistent status region shows *model · effort · context progress · mode*; while agents run it adds a `⟳ 6/7 agents · 1m21s · ↓ inspect` summary line.
+- **Shift+Tab to cycle mode**: `normal` (shell asks per command) → `auto-accept` (shell auto-approved) → `plan` (read-only; propose a plan first).
+- **↓ to drill in**: press **↓** during a run to open a full-screen view of every sub-agent's *model / tokens / tool count / elapsed / status*; `x` stop · `p` pause/resume · `s` save · `esc` back. `/workflows` reopens the most recent run.
+- **`workflow` tool (--yolo)**: let the model orchestrate a multi-phase workflow (phase/parallel/pipeline/budget) as a JS script, with progress in the same panel + drill-in. `floom run` on a TTY reuses the same live rendering plus a per-agent summary table.
 
 ### 🛡️ Production Hardening
 

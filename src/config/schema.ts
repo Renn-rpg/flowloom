@@ -16,7 +16,9 @@ export const hooksSchema = z.object({
 export const settingsSchema = z.object({
   model: z.string().optional(),
   maxTokens: z.number().int().positive().default(8192),
-  contextTokens: z.number().int().min(0).default(0),
+  // 上下文裁剪自保护预算（≈4 字符/token 估算超过它就从最旧对话轮整轮丢弃）。默认 1M：
+  // 对齐旗舰 deepseek-v4-pro 的窗口（owner 设定，非官方实测，可 FLOOM_CONTEXT_TOKENS 覆盖；0=关闭）。
+  contextTokens: z.number().int().min(0).default(1_000_000),
   effort: z.string().optional(),
   permissions: permissionsSchema,
   hooks: hooksSchema,
